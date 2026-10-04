@@ -65,6 +65,8 @@ export default function Dashboard() {
 
   const revenueChart = useMemo(() => data?.revenue.filter(x => x.yoy_pct != null).map(x => ({ label: quarterLabel(x.period_end), yoy: x.yoy_pct })) ?? [], [data]);
   const incomeChart = useMemo(() => data?.net_income.filter(x => x.yoy_pct != null).map(x => ({ label: quarterLabel(x.period_end), yoy: x.yoy_pct })) ?? [], [data]);
+  const revenueAmountChart = useMemo(() => data?.revenue.map(x => ({ label: quarterLabel(x.period_end), amount: x.value })) ?? [], [data]);
+  const incomeAmountChart = useMemo(() => data?.net_income.map(x => ({ label: quarterLabel(x.period_end), amount: x.value })) ?? [], [data]);
   const table = useMemo(() => {
     const map = new Map<string, { end:string; fiscal?:string; revenue?:Metric; income?:Metric }>();
     for (const row of data?.revenue ?? []) map.set(row.period_end, { ...(map.get(row.period_end) ?? { end: row.period_end }), revenue: row, fiscal: row.fiscal_period });
@@ -91,6 +93,11 @@ export default function Dashboard() {
         <div className="card"><div className="metric-label">Latest quarterly revenue</div><div className="metric-value">{money(latest?.value)}</div><div className="metric-note">{latest?.period_end ?? "—"}</div></div>
         <div className="card"><div className="metric-label">Latest revenue YoY</div><div className="metric-value">{pct(latest?.yoy_pct)}</div><div className="metric-note">Compared with 4 quarters prior</div></div>
         <div className="card"><div className="metric-label">Forward P/E</div><div className="metric-value">{data.market.forward_pe_status === "not_meaningful" ? "N/M" : data.market.forward_pe == null ? "—" : data.market.forward_pe.toFixed(2)}</div><div className="metric-note">{forwardPeNote(data.market)}</div></div>
+      </section>
+
+      <section className="section grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+        <div className="card chart-card"><div className="section-title">Quarterly revenue</div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={revenueAmountChart}><CartesianGrid stroke="#27272a" strokeDasharray="3 3"/><XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }}/><YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => money(Number(v))}/><Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={(v) => [money(Number(v)), "Revenue"]}/><Bar dataKey="amount" fill="#fafafa" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer></div></div>
+        <div className="card chart-card"><div className="section-title">Quarterly net income</div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={incomeAmountChart}><CartesianGrid stroke="#27272a" strokeDasharray="3 3"/><XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }}/><YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => money(Number(v))}/><Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={(v) => [money(Number(v)), "Net income"]}/><Bar dataKey="amount" fill="#d4d4d8" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer></div></div>
       </section>
 
       <section className="section grid" style={{ gridTemplateColumns: "1fr 1fr" }}>

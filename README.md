@@ -11,7 +11,7 @@ Your computer
 ├── Python / FastAPI (localhost:8000)
 │   ├── SEC ticker + Company Facts ingestion
 │   ├── XBRL quarterly normalization / YoY calculations
-│   ├── Optional yfinance market snapshot
+│   ├── Yahoo Finance quote and optional FMP analyst EPS estimates
 │   └── SQLite persistence
 └── data/
     └── financial_dashboard.sqlite3
@@ -95,6 +95,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - SEC ticker list: refreshed after 7 days.
 - Company Facts: refreshed after 24 hours.
 - Market snapshot: refreshed after 15 minutes.
+- When `FMP_API_KEY` is configured, forward P/E uses FMP consensus EPS for the next four fiscal quarters and calculates price / EPS. Without it, the app uses Yahoo Finance estimates. Forward P/E is shown as N/M when the estimate is non-positive.
 - All raw SEC Company Facts are stored in SQLite so the dashboard can be rebuilt without another SEC request while the cache is fresh.
 - `data/financial_dashboard.sqlite3` is intentionally ignored by git.
 
@@ -105,6 +106,8 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `sec_company_facts`: raw Company Facts JSON by CIK.
 - `quarterly_metrics`: normalized quarterly revenue/net income facts.
 - `market_snapshots`: latest price/forward P/E snapshot.
+
+To enable the FMP analyst consensus source, add an API key as `FMP_API_KEY` in `backend/.env`. FMP's Financial Estimates API access is plan-dependent; the dashboard falls back to Yahoo Finance when no key is configured or FMP has no estimate data for a ticker.
 
 ## Notes
 
