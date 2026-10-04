@@ -9,7 +9,13 @@ type Metric = {
 };
 type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
-  market: { market_price: number | null; forward_pe: number | null; forward_pe_status: "available" | "not_meaningful" | "unavailable"; fetched_at: string | null };
+  market: {
+    market_price: number | null; forward_pe: number | null;
+    forward_pe_status: "available" | "not_meaningful" | "unavailable";
+    forward_eps: number | null; forward_period_end: string | null;
+    forward_pe_analysts: number | null; market_source: string | null;
+    fetched_at: string | null;
+  };
   revenue_concept: string; income_concept: string;
   revenue: Metric[]; net_income: Metric[];
   cache: Record<string, string>;
@@ -26,6 +32,17 @@ function money(value: number | null | undefined) {
 }
 function pct(value: number | null | undefined) { return value == null ? "—" : `${value.toFixed(1)}%`; }
 function quarterLabel(date: string) { const d = new Date(`${date}T00:00:00Z`); return `${d.getUTCFullYear()} Q${Math.floor(d.getUTCMonth()/3)+1}`; }
+function forwardPeNote(market: DashboardData["market"]) {
+  const source = market.market_source ?? "Estimate source unavailable";
+  if (market.forward_pe_status === "not_meaningful") {
+    const eps = market.forward_eps == null ? "is non-positive" : `is ${market.forward_eps.toFixed(2)}`;
+    const period = market.forward_period_end ? ` through ${market.forward_period_end}` : "";
+    return `Forecast EPS ${eps} · ${source}${period}`;
+  }
+  const horizon = market.forward_period_end ? ` · next 4 quarters through ${market.forward_period_end}` : "";
+  const analysts = market.forward_pe_analysts ? ` · ${market.forward_pe_analysts} analysts` : "";
+  return `${source}${horizon}${analysts}`;
+}
 
 export default function Dashboard() {
   const [ticker, setTicker] = useState("AAPL");
@@ -73,7 +90,7 @@ export default function Dashboard() {
         <div className="card"><div className="metric-label">Current stock price</div><div className="metric-value">{data.market.market_price == null ? "—" : `$${data.market.market_price.toFixed(2)}`}</div><div className="metric-note">Market snapshot cached 15 min</div></div>
         <div className="card"><div className="metric-label">Latest quarterly revenue</div><div className="metric-value">{money(latest?.value)}</div><div className="metric-note">{latest?.period_end ?? "—"}</div></div>
         <div className="card"><div className="metric-label">Latest revenue YoY</div><div className="metric-value">{pct(latest?.yoy_pct)}</div><div className="metric-note">Compared with 4 quarters prior</div></div>
-        <div className="card"><div className="metric-label">Forward P/E</div><div className="metric-value">{data.market.forward_pe_status === "not_meaningful" ? "N/M" : data.market.forward_pe == null ? "—" : data.market.forward_pe.toFixed(2)}</div><div className="metric-note">{data.market.forward_pe_status === "not_meaningful" ? "Forecast earnings are non-positive" : "Yahoo Finance estimate"}</div></div>
+        <div className="card"><div className="metric-label">Forward P/E</div><div className="metric-value">{data.market.forward_pe_status === "not_meaningful" ? "N/M" : data.market.forward_pe == null ? "—" : data.market.forward_pe.toFixed(2)}</div><div className="metric-note">{forwardPeNote(data.market)}</div></div>
       </section>
 
       <section className="section grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
