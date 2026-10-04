@@ -6,17 +6,51 @@ from . import db
 from .metrics import quarter_metric
 from .market import snapshot
 from .sec import SecError, get_company, get_company_facts
+from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
     yield
 
+
 app = FastAPI(title="Local SEC Financial Dashboard API", lifespan=lifespan)
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+def build_metric(facts, cik, years, kind):
+    try:
+        return quarter_metric(facts, years, kind)
+    except ValueError:
+        if fallback_needs_refresh(cik):
+            refresh_six_k_fallback(cik, years)
+        concept, rows = six_k_fallback(cik, kind)
+        quarters = []
+        for row in sorted(rows, key=lambda r: r["end"]):
+            quarters.append({
+                "start": row["start"], "end": row["end"], "value": float(row["val"]),
+                "filed": row.get("filed"), "fy": row.get("fy"), "fp": row.get("fp"),
+                "days": 92, "source": "6-K earnings release", "concept": concept,
+            })
+        for idx, row in enumerate(quarters):
+            prior = quarters[idx - 4]["value"] if idx >= 4 else None
+            row["yoy_pct"] = ((row["value"] / prior) - 1) * 100 if prior not in (None, 0) else None
+            fy, fp = row.get("fy"), row.get("fp")
+            row["fiscal_period"] = f"{int(fy)} {fp}" if fy is not None and fp else "-"
+            row["period_end"] = row["end"]
+            row["start_date"] = row["start"]
+            row["concept"] = concept
+        cutoff = __import__("datetime").date.today() - __import__("datetime").timedelta(days=365 * years)
+        quarters = [q for q in quarters if __import__("datetime").date.fromisoformat(q["period_end"]) >= cutoff]
+        if not quarters:
+            raise ValueError(f"Could not identify quarterly {kind} facts in the SEC data.")
+        return concept, quarters
+
 
 @app.get("/api/dashboard")
 def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: int = Query(3, ge=2, le=5)):
@@ -24,8 +58,8 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
     try:
         company = get_company(ticker)
         facts = get_company_facts(company["cik"])
-        revenue_concept, revenue = quarter_metric(facts, years, "revenue")
-        income_concept, net_income = quarter_metric(facts, years, "net income")
+        revenue_concept, revenue = build_metric(facts, company["cik"], years, "revenue")
+        income_concept, net_income = build_metric(facts, company["cik"], years, "net income")
         market = snapshot(ticker)
     except SecError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

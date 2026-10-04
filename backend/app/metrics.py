@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 
 
 def candidates(facts, kind):
-    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    taxonomies = facts.get("facts", {})
     if kind == "revenue":
         preferred = [
             "RevenueFromContractWithCustomerExcludingAssessedTax",
@@ -14,13 +14,22 @@ def candidates(facts, kind):
             "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAttributableToParent",
             "NetIncomeLossAvailableToCommonStockholdersBasic",
         ]
-    return [c for c in preferred if c in us_gaap]
+
+    namespaces = ["us-gaap"] + [name for name in taxonomies if name != "us-gaap"]
+    return [
+        (namespace, concept)
+        for concept in preferred
+        for namespace in namespaces
+        if concept in taxonomies.get(namespace, {})
+    ]
+
 
 def parse_date(s):
     return datetime.fromisoformat(s).date()
 
+
 def quarter_metric(facts, years_back, kind):
-    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    taxonomies = facts.get("facts", {})
     candidate_names = candidates(facts, kind)
     if not candidate_names:
         raise ValueError(f"No standard SEC {kind} concept was found for this company.")
@@ -30,8 +39,8 @@ def quarter_metric(facts, years_back, kind):
     best = None
     best_score = None
 
-    for concept in candidate_names:
-        rows = us_gaap[concept].get("units", {}).get("USD", [])
+    for namespace, concept in candidate_names:
+        rows = taxonomies[namespace][concept].get("units", {}).get("USD", [])
         recent_quarters = set()
         recent_cumulative = set()
         historical_quarters = set()
@@ -54,9 +63,10 @@ def quarter_metric(facts, years_back, kind):
                 latest_end = max(latest_end, end)
         score = (len(recent_quarters), len(recent_cumulative), len(historical_quarters), latest_end)
         if best_score is None or score > best_score:
-            best_score, best = score, (concept, rows)
+            best_score, best = score, (namespace, concept, rows)
 
-    concept, raw_rows = best
+    namespace, concept, raw_rows = best
+    display_concept = concept if namespace == "us-gaap" else f"{namespace}:{concept}"
     clean = []
     for row in raw_rows:
         if "start" not in row or "end" not in row:
@@ -117,7 +127,7 @@ def quarter_metric(facts, years_back, kind):
         row["fiscal_period"] = f"{int(fy)} {fp}" if fy is not None and fp else "—"
         row["period_end"] = row["end"].isoformat()
         row["start_date"] = row["start"].isoformat()
-        row["concept"] = concept
+        row["concept"] = display_concept
 
     quarters = [q for q in quarters if q["end"] >= cutoff]
-    return concept, quarters
+    return display_concept, quarters

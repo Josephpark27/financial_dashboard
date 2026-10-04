@@ -9,7 +9,7 @@ type Metric = {
 };
 type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
-  market: { market_price: number | null; forward_pe: number | null; fetched_at: string | null };
+  market: { market_price: number | null; forward_pe: number | null; forward_pe_status: "available" | "not_meaningful" | "unavailable"; fetched_at: string | null };
   revenue_concept: string; income_concept: string;
   revenue: Metric[]; net_income: Metric[];
   cache: Record<string, string>;
@@ -73,7 +73,7 @@ export default function Dashboard() {
         <div className="card"><div className="metric-label">Current stock price</div><div className="metric-value">{data.market.market_price == null ? "—" : `$${data.market.market_price.toFixed(2)}`}</div><div className="metric-note">Market snapshot cached 15 min</div></div>
         <div className="card"><div className="metric-label">Latest quarterly revenue</div><div className="metric-value">{money(latest?.value)}</div><div className="metric-note">{latest?.period_end ?? "—"}</div></div>
         <div className="card"><div className="metric-label">Latest revenue YoY</div><div className="metric-value">{pct(latest?.yoy_pct)}</div><div className="metric-note">Compared with 4 quarters prior</div></div>
-        <div className="card"><div className="metric-label">Forward P/E</div><div className="metric-value">{data.market.forward_pe == null ? "—" : data.market.forward_pe.toFixed(2)}</div><div className="metric-note">Optional yfinance snapshot</div></div>
+        <div className="card"><div className="metric-label">Forward P/E</div><div className="metric-value">{data.market.forward_pe_status === "not_meaningful" ? "N/M" : data.market.forward_pe == null ? "—" : data.market.forward_pe.toFixed(2)}</div><div className="metric-note">{data.market.forward_pe_status === "not_meaningful" ? "Forecast earnings are non-positive" : "Yahoo Finance estimate"}</div></div>
       </section>
 
       <section className="section grid" style={{ gridTemplateColumns: "1fr 1fr" }}>

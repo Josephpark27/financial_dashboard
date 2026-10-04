@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     ticker TEXT PRIMARY KEY,
     market_price REAL,
     forward_pe REAL,
+    forward_pe_status TEXT,
     fetched_at TEXT NOT NULL
 );
 """
@@ -61,6 +62,9 @@ def connection():
 def init_db():
     with connection() as conn:
         conn.executescript(SCHEMA)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(market_snapshots)")}
+        if "forward_pe_status" not in columns:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN forward_pe_status TEXT")
 
 def get_meta(key):
     with connection() as conn:
@@ -125,12 +129,12 @@ def get_metrics(ticker, metric):
         ).fetchall()
         return [dict(r) for r in rows]
 
-def save_market_snapshot(ticker, price, forward_pe, fetched_at):
+def save_market_snapshot(ticker, price, forward_pe, fetched_at, forward_pe_status=None):
     with connection() as conn:
         conn.execute(
-            "INSERT INTO market_snapshots(ticker,market_price,forward_pe,fetched_at) VALUES (?,?,?,?) "
-            "ON CONFLICT(ticker) DO UPDATE SET market_price=excluded.market_price,forward_pe=excluded.forward_pe,fetched_at=excluded.fetched_at",
-            (ticker, price, forward_pe, fetched_at),
+            "INSERT INTO market_snapshots(ticker,market_price,forward_pe,forward_pe_status,fetched_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(ticker) DO UPDATE SET market_price=excluded.market_price,forward_pe=excluded.forward_pe,forward_pe_status=excluded.forward_pe_status,fetched_at=excluded.fetched_at",
+            (ticker, price, forward_pe, forward_pe_status, fetched_at),
         )
 
 def get_market_snapshot(ticker):
