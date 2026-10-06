@@ -222,7 +222,7 @@ function forwardPeNote(market: DashboardData["market"]) {
 
 export default function Dashboard() {
   const [ticker, setTicker] = useState("AAPL");
-  const [years, setYears] = useState("3");
+  const [years, setYears] = useState("4");
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
