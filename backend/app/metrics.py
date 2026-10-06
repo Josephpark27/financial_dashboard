@@ -9,6 +9,11 @@ def candidates(facts, kind):
             "SalesRevenueNet", "Revenues", "SalesRevenueGoodsNet",
             "RevenueFromContractWithCustomerIncludingAssessedTax",
         ]
+    elif kind == "eps":
+        preferred = [
+            "EarningsPerShareDiluted", "EarningsPerShareBasic",
+            "DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
+        ]
     else:
         preferred = [
             "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAttributableToParent",
@@ -26,6 +31,60 @@ def candidates(facts, kind):
 
 def parse_date(s):
     return datetime.fromisoformat(s).date()
+
+
+def add_growth_metrics(quarters):
+    """Add sequential-quarter, YoY, and trailing-twelve-month series in place."""
+    def end_date(row):
+        value = row["end"]
+        return value if isinstance(value, date) else parse_date(value)
+
+    def adjacent_quarters(later, earlier):
+        days = (end_date(later) - end_date(earlier)).days
+        return 70 <= days <= 120
+
+    def comparable_year(later, earlier):
+        days = (end_date(later) - end_date(earlier)).days
+        return 330 <= days <= 400
+
+    for index, row in enumerate(quarters):
+        previous_quarter = quarters[index - 1] if index >= 1 else None
+        prior_year_quarter = quarters[index - 4] if index >= 4 else None
+        ttm_chain = index >= 3 and all(
+            adjacent_quarters(quarters[i], quarters[i - 1])
+            for i in range(index - 2, index + 1)
+        )
+
+        row["qoq_pct"] = (
+            ((row["value"] / previous_quarter["value"]) - 1) * 100
+            if previous_quarter and adjacent_quarters(row, previous_quarter)
+            and previous_quarter["value"] != 0 else None
+        )
+        row["yoy_pct"] = (
+            ((row["value"] / prior_year_quarter["value"]) - 1) * 100
+            if prior_year_quarter and comparable_year(row, prior_year_quarter)
+            and all(adjacent_quarters(quarters[i], quarters[i - 1]) for i in range(index - 3, index + 1))
+            and prior_year_quarter["value"] != 0 else None
+        )
+
+        row["ttm_value"] = (
+            sum(quarters[i]["value"] for i in range(index - 3, index + 1))
+            if ttm_chain else None
+        )
+        previous_ttm = quarters[index - 1].get("ttm_value") if index >= 1 else None
+        prior_year_ttm = quarters[index - 4].get("ttm_value") if index >= 4 else None
+        row["ttm_qoq_pct"] = (
+            ((row["ttm_value"] / previous_ttm) - 1) * 100
+            if row["ttm_value"] is not None and previous_ttm not in (None, 0)
+            and previous_quarter and adjacent_quarters(row, previous_quarter) else None
+        )
+        row["ttm_yoy_pct"] = (
+            ((row["ttm_value"] / prior_year_ttm) - 1) * 100
+            if row["ttm_value"] is not None and prior_year_ttm not in (None, 0)
+            and comparable_year(row, quarters[index - 4])
+            and all(adjacent_quarters(quarters[i], quarters[i - 1]) for i in range(index - 3, index + 1))
+            else None
+        )
 
 
 def _candidate_score(rows, cutoff, internal_cutoff):
@@ -130,6 +189,55 @@ def _quarters_for_concept(raw_rows, concept_name):
     return list(by_end.values())
 
 
+def _eps_quarters_for_concept(raw_rows, concept_name):
+    """Use reported quarterly EPS and derive Q4 from annual less Q1–Q3 EPS."""
+    clean = _clean_periods(raw_rows)
+    direct = [dict(row, source="reported quarterly", concept=concept_name)
+              for row in clean if 70 <= row["days"] <= 120]
+    annual = [row for row in clean if 350 <= row["days"] <= 380]
+    derived = []
+
+    for year_row in annual:
+        fiscal_year = year_row.get("fy")
+        quarters_by_fiscal_period = {}
+        for row in direct:
+            if row.get("fp") not in {"Q1", "Q2", "Q3"}:
+                continue
+            if row["start"] < year_row["start"] or row["end"] >= year_row["end"]:
+                continue
+            if fiscal_year is not None and row.get("fy") != fiscal_year:
+                continue
+            previous = quarters_by_fiscal_period.get(row["fp"])
+            if previous is None or row["end"] > previous["end"]:
+                quarters_by_fiscal_period[row["fp"]] = row
+
+        first, second, third = (quarters_by_fiscal_period.get(period) for period in ("Q1", "Q2", "Q3"))
+        if not (first and second and third):
+            continue
+        if not (70 <= (second["end"] - first["end"]).days <= 120
+                and 70 <= (third["end"] - second["end"]).days <= 120
+                and 70 <= (year_row["end"] - third["end"]).days <= 120):
+            continue
+
+        derived.append({
+            "start": third["end"] + timedelta(days=1), "end": year_row["end"],
+            "value": year_row["value"] - first["value"] - second["value"] - third["value"],
+            "filed": year_row.get("filed"), "fy": fiscal_year, "fp": "Q4",
+            "days": (year_row["end"] - third["end"]).days,
+            "source": "derived from annual EPS", "concept": concept_name,
+        })
+
+    combined = direct + derived
+    combined.sort(key=lambda item: (
+        item["end"], 0 if item["source"] == "reported quarterly" else 1,
+        item.get("filed") or "",
+    ))
+    by_end = {}
+    for row in combined:
+        by_end.setdefault(row["end"], row)
+    return list(by_end.values())
+
+
 def quarter_metric(facts, years_back, kind):
     taxonomies = facts.get("facts", {})
     candidate_names = candidates(facts, kind)
@@ -140,7 +248,16 @@ def quarter_metric(facts, years_back, kind):
     internal_cutoff = cutoff - timedelta(days=500)
     ranked = []
     for position, (namespace, concept) in enumerate(candidate_names):
-        rows = taxonomies[namespace][concept].get("units", {}).get("USD", [])
+        units = taxonomies[namespace][concept].get("units", {})
+        if kind == "eps":
+            rows = next((
+                values for unit, values in units.items()
+                if unit.replace(" ", "").lower() in {"usd/shares", "usd/share"}
+            ), [])
+        else:
+            rows = units.get("USD", [])
+        if not rows:
+            continue
         score = _candidate_score(rows, cutoff, internal_cutoff)
         display_name = concept if namespace == "us-gaap" else f"{namespace}:{concept}"
         ranked.append((score, position, display_name, rows))
@@ -152,8 +269,15 @@ def quarter_metric(facts, years_back, kind):
     # remaining standard concepts.
     quarter_by_end = {}
     used_concepts = []
-    for _, _, display_name, rows in ranked:
-        for quarter in _quarters_for_concept(rows, display_name):
+    # Basic and diluted EPS are different series, so never fill holes in one
+    # with values from the other. Keep the highest-ranked EPS concept intact.
+    selected_candidates = ranked[:1] if kind == "eps" else ranked
+    for _, _, display_name, rows in selected_candidates:
+        metric_quarters = (
+            _eps_quarters_for_concept(rows, display_name)
+            if kind == "eps" else _quarters_for_concept(rows, display_name)
+        )
+        for quarter in metric_quarters:
             existing = quarter_by_end.get(quarter["end"])
             if existing is None:
                 quarter_by_end[quarter["end"]] = quarter
@@ -174,10 +298,12 @@ def quarter_metric(facts, years_back, kind):
         raise ValueError(f"Could not identify quarterly {kind} facts in the SEC data.")
 
     quarters = [quarter_by_end[end] for end in sorted(quarter_by_end)]
-    quarters = [quarter for quarter in quarters if quarter["end"] >= internal_cutoff]
-    for index, row in enumerate(quarters):
-        prior = quarters[index - 4]["value"] if index >= 4 else None
-        row["yoy_pct"] = ((row["value"] / prior) - 1) * 100 if prior not in (None, 0) else None
+
+    # Calculate all derived series before applying the requested display
+    # window. This keeps the first visible TTM values complete and lets YoY
+    # comparisons reach back far enough for the full trailing year.
+    add_growth_metrics(quarters)
+    for row in quarters:
         fiscal_period = row.get("fp")
         fiscal_year = row.get("fy")
         if fiscal_period == "FY":
