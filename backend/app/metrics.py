@@ -397,3 +397,116 @@ def free_cash_flow_metric(facts, years_back):
     if not free_cash_flow:
         raise ValueError("Could not identify quarterly free cash flow in the SEC data.")
     return f"{operating_concept} - {capex_concept}", free_cash_flow
+
+
+def _instant_quarters_for_concept(raw_rows, concept_name):
+    """Collect balance-sheet facts, which are point-in-time rather than durations."""
+    by_end = {}
+    for row in raw_rows:
+        if "end" not in row or "start" in row:
+            continue
+        try:
+            end, value = parse_date(row["end"]), float(row["val"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        filed = row.get("filed")
+        clean = {
+            "end": end, "value": value, "filed": filed,
+            "fy": row.get("fy"), "fp": row.get("fp"),
+            "latest_filed": filed or "", "concept": concept_name,
+        }
+        previous = by_end.get(end)
+        if previous is None:
+            by_end[end] = clean
+            continue
+        if filed and (not previous["filed"] or filed < previous["filed"]):
+            previous["filed"] = filed
+            previous["fy"] = row.get("fy")
+            previous["fp"] = row.get("fp")
+        if (filed or "") >= previous["latest_filed"]:
+            previous["value"] = value
+            previous["latest_filed"] = filed or ""
+
+    for row in by_end.values():
+        row.pop("latest_filed", None)
+    return list(by_end.values())
+
+
+def _instant_metric_series(facts, preferred, cutoff):
+    taxonomies = facts.get("facts", {})
+    namespaces = ["us-gaap"] + [name for name in taxonomies if name != "us-gaap"]
+    ranked = []
+    for position, concept in enumerate(preferred):
+        for namespace in namespaces:
+            definition = taxonomies.get(namespace, {}).get(concept)
+            if not definition:
+                continue
+            raw_rows = definition.get("units", {}).get("USD", [])
+            display_name = concept if namespace == "us-gaap" else f"{namespace}:{concept}"
+            rows = _instant_quarters_for_concept(raw_rows, display_name)
+            recent = [row for row in rows if row["end"] >= cutoff]
+            if not recent:
+                continue
+            score = (len(recent), max(row["end"] for row in recent))
+            ranked.append((score, position, display_name, rows))
+
+    ranked.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    if not ranked:
+        return None, {}
+
+    by_end = {}
+    used_concepts = []
+    for _, _, display_name, rows in ranked:
+        for row in rows:
+            if row["end"] not in by_end:
+                by_end[row["end"]] = row
+                if display_name not in used_concepts:
+                    used_concepts.append(display_name)
+
+    concept_label = used_concepts[0]
+    if len(used_concepts) > 1:
+        concept_label += " (+ supplemental SEC concepts)"
+    return concept_label, by_end
+
+
+def balance_sheet_metric(facts, years_back):
+    """Build quarterly assets/liabilities and derive equity as assets less liabilities."""
+    cutoff = date.today() - timedelta(days=365 * years_back)
+    assets_concept, assets_by_end = _instant_metric_series(facts, ["Assets"], cutoff)
+    liabilities_concept, liabilities_by_end = _instant_metric_series(facts, ["Liabilities"], cutoff)
+    if not assets_by_end or not liabilities_by_end:
+        raise ValueError("Could not identify quarterly assets and liabilities in the SEC data.")
+
+    periods = []
+    for end in sorted(assets_by_end.keys() & liabilities_by_end.keys()):
+        if end < cutoff:
+            continue
+        assets = assets_by_end[end]
+        liabilities = liabilities_by_end[end]
+        asset_value = assets["value"]
+        liability_value = liabilities["value"]
+        equity_value = asset_value - liability_value
+        filing_dates = [value for value in (assets.get("filed"), liabilities.get("filed")) if value]
+        fiscal_period = assets.get("fp") or liabilities.get("fp")
+        fiscal_year = assets.get("fy") if assets.get("fy") is not None else liabilities.get("fy")
+        if fiscal_period == "FY":
+            fiscal_period = "Q4"
+        if fiscal_period not in {"Q1", "Q2", "Q3", "Q4"}:
+            fiscal_period = f"Q{(end.month - 1) // 3 + 1}"
+        if fiscal_year is None:
+            fiscal_year = end.year
+        periods.append({
+            "period_end": end.isoformat(),
+            "fiscal_period": f"{int(fiscal_year)} {fiscal_period}",
+            "filed": min(filing_dates) if filing_dates else None,
+            "assets": asset_value,
+            "liabilities": liability_value,
+            "equity": equity_value,
+        })
+
+    if not periods:
+        raise ValueError("Could not match quarterly assets and liabilities in the SEC data.")
+    concept = f"{assets_concept} - {liabilities_concept}; equity = assets - liabilities"
+    for row in periods:
+        row["concept"] = concept
+    return concept, periods

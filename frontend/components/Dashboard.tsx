@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bar, BarChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Legend, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type Metric = {
   period_end: string; start_date?: string; fiscal_period?: string; filed?: string;
@@ -11,6 +11,10 @@ type Metric = {
 };
 type PEPoint = {
   period_end: string; fiscal_period?: string; price: number; ttm_eps: number; pe: number;
+};
+type BalanceSheetPoint = {
+  period_end: string; fiscal_period: string; filed?: string | null;
+  assets: number; liabilities: number; equity: number;
 };
 type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
@@ -24,6 +28,7 @@ type DashboardData = {
   revenue_concept: string; income_concept: string;
   eps_concept?: string; revenue: Metric[]; net_income: Metric[]; eps?: Metric[];
   free_cash_flow_concept?: string; free_cash_flow?: Metric[];
+  balance_sheet_concept?: string; balance_sheet?: BalanceSheetPoint[];
   pe_history?: PEPoint[];
   cache: Record<string, string>;
 };
@@ -108,6 +113,51 @@ function MetricTrendPanel({ title, rows, color, valueFormatter = money, note }: 
           <ReferenceLine y={0} stroke="#71717a" />
           <Bar dataKey="growth" fill={color} radius={[4, 4, 0, 0]} maxBarSize={52} />
         </BarChart></ResponsiveContainer></div>
+      </div>
+    </div>
+  </section>;
+}
+
+function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
+  const chartData = useMemo(() => rows.map(row => ({
+    ...row,
+    label: fiscalShortLabel(row.fiscal_period, row.period_end),
+  })), [rows]);
+
+  return <section className="section trend-panel">
+    <header className="trend-panel-header">
+      <div>
+        <h2 className="trend-panel-title">Assets = Liabilities + Equity</h2>
+        <p className="trend-panel-note">Quarter-end balances from SEC filings. Equity is calculated as assets minus liabilities to reconcile each bar to assets.</p>
+      </div>
+    </header>
+    <div className="card trend-chart-card">
+      <header className="trend-chart-header"><h3 className="section-title">Quarterly balance sheet</h3></header>
+      <div className="trend-chart-wrap">{chartData.length > 0
+        ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
+            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+            <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
+            <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => money(Number(v))} width={86} />
+            <Tooltip
+              cursor={{ fill: "#27272a", fillOpacity: 0.22 }}
+              content={({ active, payload }) => {
+                const point = payload?.[0]?.payload as BalanceSheetPoint | undefined;
+                if (!active || !point) return null;
+                const share = (value: number) => point.assets === 0 ? "—" : pct(value / point.assets * 100);
+                return <div className="chart-tooltip">
+                  <strong>{point.fiscal_period} · {point.period_end}</strong>
+                  <div><span>Assets</span><b>{money(point.assets)}</b></div>
+                  <div><span>Equity</span><b>{money(point.equity)} ({share(point.equity)})</b></div>
+                  <div><span>Liabilities</span><b>{money(point.liabilities)} ({share(point.liabilities)})</b></div>
+                </div>;
+              }}
+            />
+            <Legend formatter={value => value === "liabilities" ? "Liabilities" : "Equity"} wrapperStyle={{ color: "#a1a1aa", fontSize: 12 }} />
+            <ReferenceLine y={0} stroke="#52525b" />
+            <Bar dataKey="liabilities" stackId="balance" fill="#f97316" radius={[0, 0, 0, 0]} maxBarSize={52} />
+            <Bar dataKey="equity" stackId="balance" fill="#60a5fa" radius={[4, 4, 0, 0]} maxBarSize={52} />
+          </BarChart></ResponsiveContainer>
+        : <div className="empty-trend-note">Quarterly assets and liabilities are not available in SEC facts for this ticker.</div>}
       </div>
     </div>
   </section>;
@@ -203,6 +253,7 @@ export default function Dashboard() {
   const latest = data?.revenue.at(-1);
   const epsRows = data?.eps ?? [];
   const freeCashFlowRows = data?.free_cash_flow ?? [];
+  const balanceSheetRows = data?.balance_sheet ?? [];
   const peHistory = data?.pe_history ?? [];
 
   return <main className="container">
@@ -233,10 +284,11 @@ export default function Dashboard() {
       {epsRows.length > 0
         ? <MetricTrendPanel title="EPS" rows={epsRows} color="#fafafa" valueFormatter={dollarsPerShare} note={epsRows.some(row => row.source === "derived from annual EPS") ? "Q4 is derived from annual EPS less reported Q1–Q3; TTM sums four quarterly EPS values." : "TTM sums the latest four quarterly EPS values."} />
         : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">EPS trends</h2></header><p className="empty-trend-note">Quarterly EPS facts are not available for this ticker.</p></section>}
+      <BalanceSheetPanel rows={balanceSheetRows} />
       <PETrendPanel rows={peHistory} market={data.market} />
 
       <section className="section"><div className="section-title">Quarterly financials</div><div className="table-wrap"><table><thead><tr><th>Fiscal period</th><th>Period end</th><th>Report date</th><th>Revenue</th><th>Revenue YoY</th><th>Net income</th><th>Net income YoY</th></tr></thead><tbody>{table.map(row => <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value)}</td><td>{pct(row.income?.yoy_pct)}</td></tr>)}</tbody></table></div></section>
-      <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
+      <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • balance sheet <strong>{data.balance_sheet_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
     </>}
   </main>;
 }
