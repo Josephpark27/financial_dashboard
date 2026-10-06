@@ -14,6 +14,19 @@ def candidates(facts, kind):
             "EarningsPerShareDiluted", "EarningsPerShareBasic",
             "DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
         ]
+    elif kind == "operating cash flow":
+        preferred = [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+            "CashFlowsFromUsedInOperatingActivities",
+        ]
+    elif kind == "capital expenditures":
+        preferred = [
+            "PaymentsToAcquirePropertyPlantAndEquipment",
+            "PaymentsToAcquireProductiveAssets",
+            "PaymentsToAcquirePropertyPlantAndEquipmentAndIntangibleAssets",
+            "PaymentsToAcquireIntangibleAssets",
+        ]
     else:
         preferred = [
             "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAttributableToParent",
@@ -159,7 +172,11 @@ def _quarters_for_concept(raw_rows, concept_name):
     derived = []
     for row in cumulative:
         priors = [
-            previous for previous in cumulative
+            # A first-quarter cash-flow fact often has the same fiscal-year
+            # start as the six-month YTD fact, but is itself a direct
+            # quarterly duration (70–120 days). Include direct facts here so
+            # Q2 can be derived as six-month YTD less reported Q1.
+            previous for previous in clean
             if previous["start"] == row["start"]
             and previous["end"] < row["end"]
             and previous["days"] < row["days"]
@@ -323,3 +340,60 @@ def quarter_metric(facts, years_back, kind):
     for row in quarters:
         row["concept"] = display_concept
     return display_concept, quarters
+
+
+def free_cash_flow_metric(facts, years_back):
+    """Derive free cash flow as operating cash flow less capital expenditures."""
+    # Fetch two extra years so TTM and YoY growth remain complete at the start
+    # of the requested display window.
+    operating_concept, operating_rows = quarter_metric(
+        facts, years_back + 2, "operating cash flow",
+    )
+    capex_concept, capex_rows = quarter_metric(
+        facts, years_back + 2, "capital expenditures",
+    )
+    # The SEC reports both cash-flow components for the same fiscal quarter,
+    # though concept tags can differ by a day in their reported start date.
+    # Quarter end is the stable key after each component has been normalized
+    # into quarterly values.
+    capex_by_period = {row["end"]: row for row in capex_rows}
+    free_cash_flow = []
+    for operating in operating_rows:
+        capex = capex_by_period.get(operating["end"])
+        if capex is None:
+            continue
+        filing_dates = [value for value in (operating.get("filed"), capex.get("filed")) if value]
+        free_cash_flow.append({
+            "start": operating["start"],
+            "end": operating["end"],
+            "value": operating["value"] - abs(capex["value"]),
+            "filed": min(filing_dates) if filing_dates else None,
+            "fy": operating.get("fy") if operating.get("fy") is not None else capex.get("fy"),
+            "fp": operating.get("fp") or capex.get("fp"),
+            "source": "derived from operating cash flow and capital expenditures",
+        })
+
+    if not free_cash_flow:
+        raise ValueError("Could not derive quarterly free cash flow from SEC cash flow facts.")
+
+    free_cash_flow.sort(key=lambda row: row["end"])
+    add_growth_metrics(free_cash_flow)
+    for row in free_cash_flow:
+        fiscal_period = row.get("fp")
+        fiscal_year = row.get("fy")
+        if fiscal_period == "FY":
+            fiscal_period = "Q4"
+        if not fiscal_period:
+            fiscal_period = f"Q{(row['end'].month - 1) // 3 + 1}"
+        if fiscal_year is None:
+            fiscal_year = row["end"].year
+        row["fiscal_period"] = f"{int(fiscal_year)} {fiscal_period}"
+        row["period_end"] = row["end"].isoformat()
+        row["start_date"] = row["start"].isoformat()
+        row["concept"] = f"{operating_concept} - {capex_concept}"
+
+    cutoff = date.today() - timedelta(days=365 * years_back)
+    free_cash_flow = [row for row in free_cash_flow if row["end"] >= cutoff]
+    if not free_cash_flow:
+        raise ValueError("Could not identify quarterly free cash flow in the SEC data.")
+    return f"{operating_concept} - {capex_concept}", free_cash_flow

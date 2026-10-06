@@ -9,6 +9,9 @@ type Metric = {
   ttm_value?: number | null; ttm_yoy_pct?: number | null; ttm_qoq_pct?: number | null;
   source?: string; concept?: string;
 };
+type PEPoint = {
+  period_end: string; fiscal_period?: string; price: number; ttm_eps: number; pe: number;
+};
 type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
   market: {
@@ -20,6 +23,8 @@ type DashboardData = {
   };
   revenue_concept: string; income_concept: string;
   eps_concept?: string; revenue: Metric[]; net_income: Metric[]; eps?: Metric[];
+  free_cash_flow_concept?: string; free_cash_flow?: Metric[];
+  pe_history?: PEPoint[];
   cache: Record<string, string>;
 };
 
@@ -37,11 +42,14 @@ function dollarsPerShare(value: number | null | undefined) {
 }
 function pct(value: number | null | undefined) { return value == null ? "—" : `${value.toFixed(1)}%`; }
 function quarterLabel(date: string) { const d = new Date(`${date}T00:00:00Z`); return `${d.getUTCFullYear()} Q${Math.floor(d.getUTCMonth()/3)+1}`; }
-function shortPeriodLabel(row: Metric) {
-  const fiscal = row.fiscal_period?.match(/^(\d{4})\s+(Q\d)$/);
+function fiscalShortLabel(fiscalPeriod: string | undefined, periodEnd: string) {
+  const fiscal = fiscalPeriod?.match(/^(\d{4})\s+(Q\d)$/);
   if (fiscal) return `${fiscal[2]} ’${fiscal[1].slice(-2)}`;
-  const calendar = quarterLabel(row.period_end).match(/^(\d{4})\s+(Q\d)$/);
-  return calendar ? `${calendar[2]} ’${calendar[1].slice(-2)}` : row.period_end;
+  const calendar = quarterLabel(periodEnd).match(/^(\d{4})\s+(Q\d)$/);
+  return calendar ? `${calendar[2]} ’${calendar[1].slice(-2)}` : periodEnd;
+}
+function shortPeriodLabel(row: Metric) {
+  return fiscalShortLabel(row.fiscal_period, row.period_end);
 }
 
 function MetricTrendPanel({ title, rows, color, valueFormatter = money, note }: {
@@ -105,6 +113,51 @@ function MetricTrendPanel({ title, rows, color, valueFormatter = money, note }: 
   </section>;
 }
 
+function PETrendPanel({ rows, market }: { rows: PEPoint[]; market: DashboardData["market"] }) {
+  const [mode, setMode] = useState<"forward" | "trailing">("forward");
+  const forwardPe = market.forward_pe_status === "available" ? market.forward_pe : null;
+  const chartData = useMemo(() => mode === "forward"
+    ? (forwardPe == null ? [] : [{ label: "Current", pe: forwardPe }])
+    : rows.map(row => ({ label: fiscalShortLabel(row.fiscal_period, row.period_end), pe: row.pe })),
+  [mode, forwardPe, rows]);
+  const chartTitle = mode === "forward" ? "Forward P/E" : "Trailing P/E";
+  const note = mode === "forward"
+    ? `Current forward P/E from ${market.market_source ?? "the available estimate source"}. Historical analyst estimates are not available.`
+    : "Quarter-end share price divided by SEC trailing-12-month EPS; price uses the last Yahoo Finance close on or before period end.";
+  const emptyMessage = mode === "forward"
+    ? market.forward_pe_status === "not_meaningful"
+      ? "Forward P/E is not meaningful because forecast EPS is nonpositive."
+      : "Forward P/E is unavailable from the configured estimate sources."
+    : "Historical P/E is unavailable for the selected history.";
+
+  return <section className="section trend-panel">
+    <header className="trend-panel-header">
+      <div>
+        <h2 className="trend-panel-title">P/E trends</h2>
+        <p className="trend-panel-note">{note}</p>
+      </div>
+      <div className="segmented-control" role="group" aria-label="P/E ratio type">
+        <button type="button" aria-pressed={mode === "forward"} onClick={() => setMode("forward")}>Forward</button>
+        <button type="button" aria-pressed={mode === "trailing"} onClick={() => setMode("trailing")}>Trailing</button>
+      </div>
+    </header>
+    <div className="card trend-chart-card">
+      <header className="trend-chart-header"><h3 className="section-title">{chartTitle}</h3></header>
+      <div className="trend-chart-wrap">{chartData.length > 0
+        ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
+            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+            <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
+            <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => `${Number(v).toFixed(0)}x`} width={54} />
+            <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [`${Number(v).toFixed(2)}x`, chartTitle]} />
+            <ReferenceLine y={0} stroke="#71717a" />
+            <Bar dataKey="pe" fill="#fbbf24" radius={[4, 4, 0, 0]} maxBarSize={52} />
+          </BarChart></ResponsiveContainer>
+        : <div className="empty-trend-note">{emptyMessage}</div>}
+      </div>
+    </div>
+  </section>;
+}
+
 function forwardPeNote(market: DashboardData["market"]) {
   const source = market.market_source ?? "Estimate source unavailable";
   if (market.forward_pe_status === "not_meaningful") {
@@ -149,6 +202,8 @@ export default function Dashboard() {
   }, [data]);
   const latest = data?.revenue.at(-1);
   const epsRows = data?.eps ?? [];
+  const freeCashFlowRows = data?.free_cash_flow ?? [];
+  const peHistory = data?.pe_history ?? [];
 
   return <main className="container">
     <header className="header">
@@ -172,12 +227,16 @@ export default function Dashboard() {
 
       <MetricTrendPanel title="Revenue" rows={data.revenue} color="#fafafa" />
       <MetricTrendPanel title="Net income" rows={data.net_income} color="#fafafa" />
+      {freeCashFlowRows.length > 0
+        ? <MetricTrendPanel title="Free cash flow" rows={freeCashFlowRows} color="#86efac" note="Derived from SEC cash flow statements as operating cash flow minus capital expenditures." />
+        : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">Free cash flow trends</h2></header><p className="empty-trend-note">Free cash flow requires reported operating cash flow and capital expenditures for matching quarters.</p></section>}
       {epsRows.length > 0
         ? <MetricTrendPanel title="EPS" rows={epsRows} color="#fafafa" valueFormatter={dollarsPerShare} note={epsRows.some(row => row.source === "derived from annual EPS") ? "Q4 is derived from annual EPS less reported Q1–Q3; TTM sums four quarterly EPS values." : "TTM sums the latest four quarterly EPS values."} />
         : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">EPS trends</h2></header><p className="empty-trend-note">Quarterly EPS facts are not available for this ticker.</p></section>}
+      <PETrendPanel rows={peHistory} market={data.market} />
 
       <section className="section"><div className="section-title">Quarterly financials</div><div className="table-wrap"><table><thead><tr><th>Fiscal period</th><th>Period end</th><th>Report date</th><th>Revenue</th><th>Revenue YoY</th><th>Net income</th><th>Net income YoY</th></tr></thead><tbody>{table.map(row => <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value)}</td><td>{pct(row.income?.yoy_pct)}</td></tr>)}</tbody></table></div></section>
-      <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
+      <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
     </>}
   </main>;
 }

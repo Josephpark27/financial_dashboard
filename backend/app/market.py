@@ -1,11 +1,13 @@
-from datetime import datetime, timezone, timedelta
+from bisect import bisect_right
+from datetime import date, datetime, timezone, timedelta
 import json
 import math
+from threading import Lock
 
 import requests
 
 from . import db
-from .config import ALPHAVANTAGE_API_KEY, MARKET_DATA_ENABLED
+from .config import ALPHAVANTAGE_API_KEY, DB_PATH, MARKET_DATA_ENABLED
 
 ALPHAVANTAGE_URL = "https://www.alphavantage.co/query"
 ALPHAVANTAGE_SOURCE = "Alpha Vantage analyst consensus"
@@ -13,6 +15,10 @@ YAHOO_SOURCE = "Yahoo Finance"
 YAHOO_AV_UNAVAILABLE_SOURCE = "Yahoo Finance (Alpha Vantage unavailable)"
 MARKET_SNAPSHOT_TTL = timedelta(minutes=15)
 ESTIMATE_CACHE_TTL = timedelta(hours=24)
+HISTORICAL_CLOSE_CACHE_TTL = timedelta(hours=24)
+EMPTY_HISTORICAL_CLOSE_CACHE_TTL = timedelta(minutes=15)
+_YFINANCE_CACHE_LOCK = Lock()
+_YFINANCE_CACHE_CONFIGURED = False
 
 
 def now_iso():
@@ -25,6 +31,96 @@ def _number(value):
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _yfinance_client():
+    global _YFINANCE_CACHE_CONFIGURED
+    import yfinance as yf
+
+    # yfinance's default user-cache location can be unavailable in packaged
+    # or sandboxed runs. Keep its SQLite caches beside the dashboard database.
+    if not _YFINANCE_CACHE_CONFIGURED:
+        with _YFINANCE_CACHE_LOCK:
+            if not _YFINANCE_CACHE_CONFIGURED:
+                yf.set_tz_cache_location(str(DB_PATH.parent / "yfinance-cache"))
+                _YFINANCE_CACHE_CONFIGURED = True
+    return yf
+
+
+def _historical_closes(ticker, first_period_end):
+    """Load and cache split-adjusted daily closes needed for historical P/E."""
+    ticker = ticker.upper()
+    fetch_start = first_period_end - timedelta(days=10)
+    cache_key = f"market_history:yahoo:v2:{ticker}"
+    cached_text = db.get_meta(cache_key)
+    if cached_text:
+        try:
+            cached = json.loads(cached_text)
+            cached_at = datetime.fromisoformat(cached["cached_at"].replace("Z", "+00:00"))
+            prices = cached.get("prices", [])
+            ttl = HISTORICAL_CLOSE_CACHE_TTL if prices else EMPTY_HISTORICAL_CLOSE_CACHE_TTL
+            cache_covers_start = prices and prices[0]["date"] <= fetch_start.isoformat()
+            if datetime.now(timezone.utc) - cached_at < ttl and (not prices or cache_covers_start):
+                return prices
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+    prices = []
+    try:
+        yf = _yfinance_client()
+        history = yf.Ticker(ticker).history(
+            start=fetch_start.isoformat(),
+            end=(date.today() + timedelta(days=1)).isoformat(),
+            interval="1d", auto_adjust=False, actions=False, timeout=10,
+        )
+        if history is not None and not history.empty and "Close" in history:
+            for stamp, raw_close in history["Close"].dropna().items():
+                close = _number(raw_close)
+                if close is not None and close > 0:
+                    prices.append({"date": stamp.date().isoformat(), "close": close})
+    except Exception:
+        # Historical valuation is optional and should not break the dashboard.
+        prices = []
+
+    prices.sort(key=lambda item: item["date"])
+    db.set_meta(cache_key, json.dumps({"cached_at": now_iso(), "prices": prices}))
+    return prices
+
+
+def historical_pe(ticker, eps_rows):
+    """Calculate quarter-end trailing P/E from Yahoo closes and SEC TTM EPS."""
+    if not MARKET_DATA_ENABLED:
+        return []
+    eligible = [
+        (row, _number(row.get("ttm_value")))
+        for row in eps_rows
+        if _number(row.get("ttm_value")) is not None and _number(row.get("ttm_value")) > 0
+    ]
+    if not eligible:
+        return []
+
+    period_ends = [date.fromisoformat(row["period_end"]) for row, _ in eligible]
+    closes = _historical_closes(ticker, min(period_ends))
+    if not closes:
+        return []
+    close_dates = [row["date"] for row in closes]
+    output = []
+    for (row, ttm_eps), period_end in zip(eligible, period_ends):
+        index = bisect_right(close_dates, period_end.isoformat()) - 1
+        if index < 0:
+            continue
+        close_date = date.fromisoformat(close_dates[index])
+        if (period_end - close_date).days > 7:
+            continue
+        price = closes[index]["close"]
+        output.append({
+            "period_end": period_end.isoformat(),
+            "fiscal_period": row.get("fiscal_period"),
+            "price": price,
+            "ttm_eps": ttm_eps,
+            "pe": price / ttm_eps,
+        })
+    return output
 
 
 def _snapshot(
@@ -218,7 +314,7 @@ def snapshot(ticker):
     reported_pe = None
     yahoo_forward_eps = None
     try:
-        import yfinance as yf
+        yf = _yfinance_client()
         info = yf.Ticker(ticker).info or {}
         price = next((value for value in (
             _number(info.get("regularMarketPrice")),

@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 
 from . import db
-from .metrics import add_growth_metrics, quarter_metric
-from .market import snapshot
+from .metrics import add_growth_metrics, free_cash_flow_metric, quarter_metric
+from .market import historical_pe, snapshot
 from .sec import SecError, get_company, get_company_facts
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
 
@@ -63,6 +63,11 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
             eps_concept, eps = quarter_metric(facts, years, "eps")
         except ValueError:
             eps_concept, eps = "EPS not reported in SEC facts", []
+        try:
+            free_cash_flow_concept, free_cash_flow = free_cash_flow_metric(facts, years)
+        except ValueError:
+            free_cash_flow_concept, free_cash_flow = "Free cash flow unavailable in SEC facts", []
+        pe_history = historical_pe(ticker, eps)
         market = snapshot(ticker)
     except SecError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -75,8 +80,11 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         "revenue_concept": revenue_concept,
         "income_concept": income_concept,
         "eps_concept": eps_concept,
+        "free_cash_flow_concept": free_cash_flow_concept,
         "revenue": revenue,
         "net_income": net_income,
         "eps": eps,
+        "free_cash_flow": free_cash_flow,
+        "pe_history": pe_history,
         "cache": {"sec": "SQLite / 24h", "ticker_map": "SQLite / 7d", "market": "SQLite / 15m"},
     }
