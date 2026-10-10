@@ -9,6 +9,8 @@ def candidates(facts, kind):
             "SalesRevenueNet", "Revenues", "SalesRevenueGoodsNet",
             "RevenueFromContractWithCustomerIncludingAssessedTax",
         ]
+    elif kind == "gross profit":
+        preferred = ["GrossProfit"]
     elif kind == "eps":
         preferred = [
             "EarningsPerShareDiluted", "EarningsPerShareBasic",
@@ -340,6 +342,71 @@ def quarter_metric(facts, years_back, kind):
     for row in quarters:
         row["concept"] = display_concept
     return display_concept, quarters
+
+
+def margin_metric(revenue, net_income, gross_profit):
+    """Join SEC quarterly facts and calculate margins plus percentage-point changes."""
+    revenue_by_end = {row["period_end"]: row for row in revenue}
+    income_by_end = {row["period_end"]: row for row in net_income}
+    gross_by_end = {row["period_end"]: row for row in gross_profit}
+
+    def ratio(numerator, denominator):
+        if numerator is None or denominator in (None, 0):
+            return None
+        return numerator / denominator * 100
+
+    rows = []
+    for end in sorted(revenue_by_end.keys() & income_by_end.keys()):
+        revenue_row = revenue_by_end[end]
+        income_row = income_by_end[end]
+        gross_row = gross_by_end.get(end)
+        rows.append({
+            "period_end": end,
+            "fiscal_period": revenue_row.get("fiscal_period") or income_row.get("fiscal_period"),
+            "net_margin": ratio(income_row.get("value"), revenue_row.get("value")),
+            "gross_margin": ratio(gross_row.get("value"), revenue_row.get("value")) if gross_row else None,
+            "net_margin_ttm": ratio(income_row.get("ttm_value"), revenue_row.get("ttm_value")),
+            "gross_margin_ttm": ratio(gross_row.get("ttm_value"), revenue_row.get("ttm_value")) if gross_row else None,
+        })
+
+    def adjacent(later, earlier):
+        days = (date.fromisoformat(later["period_end"]) - date.fromisoformat(earlier["period_end"])).days
+        return 70 <= days <= 120
+
+    def comparable_year(later, earlier):
+        days = (date.fromisoformat(later["period_end"]) - date.fromisoformat(earlier["period_end"])).days
+        return 330 <= days <= 400
+
+    def continuous_quarters(index):
+        return all(adjacent(rows[i], rows[i - 1]) for i in range(index - 3, index + 1))
+
+    for index, row in enumerate(rows):
+        previous = rows[index - 1] if index else None
+        prior_year = rows[index - 4] if index >= 4 else None
+        qoq_valid = previous is not None and adjacent(row, previous)
+        yoy_valid = (
+            prior_year is not None and comparable_year(row, prior_year)
+            and continuous_quarters(index)
+        )
+        for field in ("net_margin", "gross_margin"):
+            ttm_field = f"{field}_ttm"
+            row[f"{field}_qoq_pp"] = (
+                row[field] - previous[field]
+                if qoq_valid and row[field] is not None and previous[field] is not None else None
+            )
+            row[f"{field}_yoy_pp"] = (
+                row[field] - prior_year[field]
+                if yoy_valid and row[field] is not None and prior_year[field] is not None else None
+            )
+            row[f"{field}_ttm_qoq_pp"] = (
+                row[ttm_field] - previous[ttm_field]
+                if qoq_valid and row[ttm_field] is not None and previous[ttm_field] is not None else None
+            )
+            row[f"{field}_ttm_yoy_pp"] = (
+                row[ttm_field] - prior_year[ttm_field]
+                if yoy_valid and row[ttm_field] is not None and prior_year[ttm_field] is not None else None
+            )
+    return rows
 
 
 def free_cash_flow_metric(facts, years_back):

@@ -1,9 +1,10 @@
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 
 from fastapi import FastAPI, HTTPException, Query
 
 from . import db
-from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, quarter_metric, shares_outstanding_metric
+from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, margin_metric, quarter_metric, shares_outstanding_metric
 from .market import earnings_event, historical_pe, snapshot
 from .sec import SecError, get_company, get_company_facts, open_sec_filing_pdf, quarterly_filing_links
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
@@ -70,6 +71,15 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         facts = get_company_facts(company["cik"])
         revenue_concept, revenue = build_metric(facts, company["cik"], years, "revenue")
         income_concept, net_income = build_metric(facts, company["cik"], years, "net income")
+        _, margin_revenue = build_metric(facts, company["cik"], years + 1, "revenue")
+        _, margin_income = build_metric(facts, company["cik"], years + 1, "net income")
+        try:
+            _, margin_gross_profit = quarter_metric(facts, years + 1, "gross profit")
+        except ValueError:
+            margin_gross_profit = []
+        margins = margin_metric(margin_revenue, margin_income, margin_gross_profit)
+        margin_cutoff = date.today() - timedelta(days=365 * years)
+        margins = [row for row in margins if date.fromisoformat(row["period_end"]) >= margin_cutoff]
         try:
             eps_concept, eps = quarter_metric(facts, years, "eps")
         except ValueError:
@@ -118,6 +128,7 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         "shares_outstanding_concept": shares_outstanding_concept,
         "revenue": revenue,
         "net_income": net_income,
+        "margins": margins,
         "eps": eps,
         "free_cash_flow": free_cash_flow,
         "balance_sheet": balance_sheet,
