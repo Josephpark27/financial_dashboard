@@ -12,6 +12,12 @@ type Metric = {
 type PEPoint = {
   period_end: string; fiscal_period?: string; price: number; ttm_eps: number; pe: number;
 };
+type TranscriptQuarter = { value: string; label: string };
+type TranscriptSegment = { speaker: string; title: string; content: string; sentiment: string };
+type EarningsTranscript = {
+  ticker: string; quarter: string; fiscal_date_ending: string | null;
+  reported_date: string | null; segments: TranscriptSegment[];
+};
 type BalanceSheetPoint = {
   period_end: string; fiscal_period: string; filed?: string | null;
   assets: number; liabilities: number; equity: number;
@@ -120,6 +126,10 @@ function fiscalShortLabel(fiscalPeriod: string | undefined, periodEnd: string) {
 }
 function shortPeriodLabel(row: Metric) {
   return fiscalShortLabel(row.fiscal_period, row.period_end);
+}
+function transcriptQuarter(value: string | undefined) {
+  const match = value?.match(/^(\d{4})\s+(Q[1-4])$/);
+  return match ? `${match[1]}${match[2]}` : null;
 }
 
 function OverviewChange({ amount, percent }: { amount: number | null; percent: number | null }) {
@@ -490,7 +500,7 @@ function PETrendPanel({ rows, market }: { rows: PEPoint[]; market: DashboardData
   const emptyMessage = mode === "forward"
     ? market.forward_pe_status === "not_meaningful"
       ? "Forward P/E is not meaningful because forecast EPS is nonpositive."
-      : "Forward P/E is unavailable from the configured estimate sources."
+      : "Yahoo Finance did not provide a forward estimate."
     : "Historical P/E is unavailable for the selected history.";
 
   return <section className="section trend-panel">
@@ -521,6 +531,77 @@ function PETrendPanel({ rows, market }: { rows: PEPoint[]; market: DashboardData
   </section>;
 }
 
+function EarningsCallPanel({ ticker, quarters }: { ticker: string; quarters: TranscriptQuarter[] }) {
+  const [quarter, setQuarter] = useState(quarters[0]?.value ?? "");
+  const [transcript, setTranscript] = useState<EarningsTranscript | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!quarters.some(item => item.value === quarter)) {
+      setQuarter(quarters[0]?.value ?? "");
+      setTranscript(null);
+    }
+  }, [quarters, quarter]);
+
+  async function fetchTranscript() {
+    if (!quarter || loading) return;
+    setLoading(true);
+    setError("");
+    setTranscript(null);
+    try {
+      const response = await fetch("/api/earnings-transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker, quarter }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Could not fetch the earnings call transcript.");
+      setTranscript(body as EarningsTranscript);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not fetch the earnings call transcript.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return <section className="section earnings-call-panel">
+    <header className="earnings-call-header">
+      <div>
+        <h2 className="trend-panel-title">Earnings Call Transcript</h2>
+        <p className="trend-panel-note">Press Fetch transcript to request it from Alpha Vantage; successful transcripts are saved locally and reused for this ticker and quarter.</p>
+      </div>
+      <div className="earnings-call-controls">
+        <label className="sr-only" htmlFor="transcript-quarter">Fiscal quarter</label>
+        <select id="transcript-quarter" className="select" value={quarter} onChange={event => { setQuarter(event.target.value); setTranscript(null); setError(""); }} disabled={quarters.length === 0 || loading}>
+          {quarters.length === 0 ? <option value="">No quarters available</option> : quarters.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select>
+        <button className="button" type="button" onClick={() => void fetchTranscript()} disabled={!quarter || loading}>
+          {loading ? "Fetching transcript…" : "Fetch transcript"}
+        </button>
+      </div>
+    </header>
+    {error && <div className="error transcript-error" role="alert">{error}</div>}
+    {transcript && <div className="transcript-results">
+      <div className="transcript-meta">
+        <strong>{transcript.ticker} · {transcript.quarter}</strong>
+        {transcript.reported_date && <span>Reported {transcript.reported_date}</span>}
+        {transcript.fiscal_date_ending && <span>Period ended {transcript.fiscal_date_ending}</span>}
+      </div>
+      {transcript.segments.length > 0
+        ? <div className="transcript-turns">{transcript.segments.map((segment, index) => <article className="transcript-turn" key={`${index}-${segment.speaker}`}>
+            {(segment.speaker || segment.title || segment.sentiment) && <header className="transcript-speaker">
+              <div>{segment.speaker && <strong>{segment.speaker}</strong>}{segment.title && <span>{segment.title}</span>}</div>
+              {segment.sentiment && <span className="transcript-sentiment">{segment.sentiment}</span>}
+            </header>}
+            <p>{segment.content}</p>
+          </article>)}</div>
+        : <p className="empty-trend-note">Alpha Vantage returned no transcript for this quarter.</p>}
+    </div>}
+    {!transcript && !error && !loading && <p className="empty-trend-note">No transcript has been fetched yet. The API is contacted only when you press “Fetch transcript.”</p>}
+  </section>;
+}
+
 function forwardPeNote(market: DashboardData["market"]) {
   const source = market.market_source ?? "Estimate source unavailable";
   if (market.forward_pe_status === "not_meaningful") {
@@ -536,6 +617,7 @@ function forwardPeNote(market: DashboardData["market"]) {
 export default function Dashboard() {
   const [ticker, setTicker] = useState("AAPL");
   const [years, setYears] = useState("4");
+    const [activeTab, setActiveTab] = useState<"financials" | "earnings">("financials");
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -582,6 +664,11 @@ export default function Dashboard() {
     () => new Map((data?.quarterly_filings ?? []).map(filing => [filing.period_end, filing])),
     [data?.quarterly_filings],
   );
+  const earningsQuarters = useMemo(() => table.flatMap(row => {
+    const label = row.fiscal ?? quarterLabel(row.end);
+    const value = transcriptQuarter(label);
+    return value ? [{ value, label }] : [];
+  }), [table]);
   const latest = data?.revenue.at(-1);
   const latestIncome = data?.net_income.at(-1);
   const revenueChange = data ? yearOverYearChange(data.revenue) : null;
@@ -619,7 +706,7 @@ export default function Dashboard() {
 
   return <main className="container">
     <header className="header">
-      <div><div className="eyebrow">Local • SEC EDGAR • SQLite</div><h1>SEC Financial Dashboard</h1><div className="subtitle">Quarterly fundamentals with a local cache. No cloud database required.</div></div>
+      <div><div className="eyebrow"></div><h1>SEC Financial Dashboard</h1><div className="subtitle">Quarterly fundamentals with a local cache. No cloud database required.</div></div>
       <div className="controls">
         <div className="field"><label>Ticker</label><input className="input" value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())} onKeyDown={e => e.key === "Enter" && void load()} /></div>
         <div className="field"><label>History</label><select className="select" value={years} onChange={e => { const nextYears = e.target.value; setYears(nextYears); void load(ticker, nextYears); }}><option value="2">2 years</option><option value="3">3 years</option><option value="4">4 years</option><option value="5">5 years</option></select></div>
@@ -648,6 +735,11 @@ export default function Dashboard() {
         </div>
         <div className="stock-price-note">Market snapshot cached 15 min</div>
       </div>
+      <div className="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
+              <button id="financials-tab" type="button" role="tab" aria-selected={activeTab === "financials"} aria-controls="financials-panel" onClick={() => setActiveTab("financials")}>Financials</button>
+        <button id="earnings-tab" type="button" role="tab" aria-selected={activeTab === "earnings"} aria-controls="earnings-panel" onClick={() => setActiveTab("earnings")}>Earnings Call</button>
+      </div>
+          <div id="financials-panel" role="tabpanel" aria-labelledby="financials-tab" hidden={activeTab !== "financials"}>
       <section className="section overview-section">
         <h2 className="overview-title">Overview</h2>
         <div className="overview-grid">
@@ -700,6 +792,10 @@ export default function Dashboard() {
         </div></details></td></tr>;
       })}</tbody></table></div></section>
       <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • balance sheet <strong>{data.balance_sheet_concept ?? "unavailable"}</strong> • shares outstanding <strong>{data.shares_outstanding_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
+      </div>
+      <div id="earnings-panel" role="tabpanel" aria-labelledby="earnings-tab" hidden={activeTab !== "earnings"}>
+        <EarningsCallPanel key={data.company.ticker} ticker={data.company.ticker} quarters={earningsQuarters} />
+      </div>
     </>}
   </main>;
 }

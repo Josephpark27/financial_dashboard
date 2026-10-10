@@ -1,11 +1,11 @@
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 
 from . import db
 from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, margin_metric, quarter_metric, shares_outstanding_metric
-from .market import earnings_event, historical_pe, snapshot
+from .market import earnings_call_transcript, earnings_event, historical_pe, snapshot
 from .sec import SecError, get_company, get_company_facts, open_sec_filing_pdf, quarterly_filing_links
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
 
@@ -33,6 +33,19 @@ def open_filing_pdf(url: str = Query(..., min_length=1, max_length=2048)):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"status": "opened"}
+
+
+@app.post("/api/earnings-transcript")
+def fetch_earnings_transcript(
+    ticker: str = Body(..., embed=True),
+    quarter: str = Body(..., embed=True),
+):
+    try:
+        return earnings_call_transcript(ticker, quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def build_metric(facts, cik, years, kind):

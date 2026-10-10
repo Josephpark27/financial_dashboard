@@ -2,6 +2,7 @@ from bisect import bisect_right
 from datetime import date, datetime, time, timezone, timedelta
 import json
 import math
+import re
 from threading import Lock
 from zoneinfo import ZoneInfo
 
@@ -11,11 +12,8 @@ from . import db
 from .config import ALPHAVANTAGE_API_KEY, DB_PATH, MARKET_DATA_ENABLED
 
 ALPHAVANTAGE_URL = "https://www.alphavantage.co/query"
-ALPHAVANTAGE_SOURCE = "Alpha Vantage analyst consensus"
 YAHOO_SOURCE = "Yahoo Finance"
-YAHOO_AV_UNAVAILABLE_SOURCE = "Yahoo Finance (Alpha Vantage unavailable)"
 MARKET_SNAPSHOT_TTL = timedelta(minutes=15)
-ESTIMATE_CACHE_TTL = timedelta(hours=24)
 EARNINGS_DATE_CACHE_TTL = timedelta(hours=24)
 HISTORICAL_CLOSE_CACHE_TTL = timedelta(hours=24)
 EMPTY_HISTORICAL_CLOSE_CACHE_TTL = timedelta(minutes=15)
@@ -154,136 +152,99 @@ def _first_number(row, *keys):
     return None
 
 
-def _estimate_rows(payload):
-    """Accept the provider's quarterly collection and common SDK response shapes."""
-    if isinstance(payload, list):
-        return payload
-    if not isinstance(payload, dict):
-        return []
-
-    for key in (
-        "quarterlyEstimates", "quarterly_estimates", "quarterly estimates", "quarterly",
-    ):
-        rows = payload.get(key)
-        if isinstance(rows, list):
-            return rows
-
-    rows = payload.get("estimates")
-    if isinstance(rows, list):
-        return [
-            row for row in rows
-            if isinstance(row, dict)
-            and (
-                not row.get("horizon")
-                or "quarter" in str(row.get("horizon", "")).lower()
-            )
-        ]
-    return []
+def _transcript_cache_key(ticker, quarter):
+    return f"earnings_transcript:alphavantage:{ticker}:{quarter}"
 
 
-def _sum_next_four_quarters(rows):
-    today = datetime.now(timezone.utc).date()
-    by_period = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        period_text = next((row.get(key) for key in (
-            "date", "fiscalDateEnding", "fiscal_date_ending", "periodEnd", "period_end",
-        ) if row.get(key)), None)
-        if not period_text:
-            continue
+def earnings_call_transcript(ticker, quarter):
+    """Fetch a transcript only when explicitly requested by the dashboard."""
+    ticker = ticker.strip().upper()
+    quarter = quarter.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9.-]{1,10}", ticker):
+        raise ValueError("Enter a valid stock ticker.")
+    if not re.fullmatch(r"\d{4}Q[1-4]", quarter):
+        raise ValueError("Choose a fiscal quarter in YYYYQn format.")
+
+    cache_key = _transcript_cache_key(ticker, quarter)
+    cached_text = db.get_meta(cache_key)
+    if cached_text:
         try:
-            period_end = datetime.fromisoformat(str(period_text)[:10]).date()
-        except ValueError:
-            continue
-        eps = _first_number(
-            row, "epsEstimateAverage", "eps_estimate_average", "epsAvg", "epsAverage",
-            "estimatedEPS", "estimatedEps", "epsEstimated",
-        )
-        if period_end <= today or eps is None:
-            continue
-        analysts = _first_number(
-            row, "epsEstimateAnalystCount", "eps_estimate_analyst_count", "numAnalystsEps",
-            "numberOfAnalysts", "analystCount", "analyst_count",
-        )
-        by_period[period_end] = (eps, analysts)
+            cached = json.loads(cached_text)
+            if (
+                cached.get("ticker") == ticker
+                and cached.get("quarter") == quarter
+                and isinstance(cached.get("segments"), list)
+                and cached["segments"]
+            ):
+                return cached
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            pass
 
-    upcoming = sorted(by_period.items())[:4]
-    if len(upcoming) != 4:
-        return None
-    # Do not call a partial or gapped forecast a next-twelve-month estimate.
-    if any((upcoming[i + 1][0] - upcoming[i][0]).days > 120 for i in range(3)):
-        return None
-
-    analyst_counts = [int(count) for _, (_, count) in upcoming if count is not None and count > 0]
-    return {
-        "eps": sum(eps for _, (eps, _) in upcoming),
-        "period_end": upcoming[-1][0].isoformat(),
-        "analysts": min(analyst_counts) if analyst_counts else None,
-    }
-
-
-def _estimate_cache_key(ticker):
-    return f"market_estimate:alphavantage:{ticker.upper()}"
-
-
-def _read_cached_estimate(ticker):
-    cached_text = db.get_meta(_estimate_cache_key(ticker))
-    if not cached_text:
-        return False, None
-    try:
-        cached = json.loads(cached_text)
-        cached_at = datetime.fromisoformat(cached["cached_at"].replace("Z", "+00:00"))
-        if datetime.now(timezone.utc) - cached_at >= ESTIMATE_CACHE_TTL:
-            return False, None
-        return True, cached.get("estimate")
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return False, None
-
-
-def _write_cached_estimate(ticker, estimate):
-    db.set_meta(
-        _estimate_cache_key(ticker),
-        json.dumps({"cached_at": now_iso(), "estimate": estimate}),
-    )
-
-
-def _alphavantage_forward_eps(ticker):
-    """Sum the next four quarterly consensus EPS estimates for an NTM EPS."""
     if not ALPHAVANTAGE_API_KEY:
-        return None
-
-    cache_hit, estimate = _read_cached_estimate(ticker)
-    if cache_hit:
-        return estimate
+        raise RuntimeError("Alpha Vantage is not configured; add ALPHAVANTAGE_API_KEY to backend/.env.")
 
     try:
         response = requests.get(
             ALPHAVANTAGE_URL,
             params={
-                "function": "EARNINGS_ESTIMATES",
+                "function": "EARNINGS_CALL_TRANSCRIPT",
                 "symbol": ticker,
+                "quarter": quarter,
                 "apikey": ALPHAVANTAGE_API_KEY,
             },
-            timeout=8,
+            timeout=25,
         )
         response.raise_for_status()
         payload = response.json()
-        # Alpha Vantage can return quota, entitlement, and validation messages
-        # in a successful HTTP response. Cache those as unavailable too, so a
-        # page refresh cannot consume the daily free-call allowance repeatedly.
-        if isinstance(payload, dict) and any(
-            key in payload for key in ("Error Message", "Note", "Information")
-        ):
-            _write_cached_estimate(ticker, None)
-            return None
-        estimate = _sum_next_four_quarters(_estimate_rows(payload))
-        _write_cached_estimate(ticker, estimate)
-        return estimate
-    except (requests.RequestException, ValueError, TypeError):
-        # Network and response failures also get a short-lived negative cache.
-        _write_cached_estimate(ticker, None)
-        return None
+    except requests.RequestException as exc:
+        raise RuntimeError("Could not reach Alpha Vantage to fetch the transcript.") from exc
+    except ValueError as exc:
+        raise RuntimeError("Alpha Vantage returned an invalid transcript response.") from exc
+
+    if isinstance(payload, dict):
+        provider_message = next((payload.get(key) for key in ("Error Message", "Note", "Information") if payload.get(key)), None)
+        if provider_message:
+            raise RuntimeError(str(provider_message))
+        raw_segments = payload.get("transcript")
+        fiscal_date_ending = payload.get("fiscalDateEnding") or payload.get("fiscal_date_ending")
+        reported_date = payload.get("reportedDate") or payload.get("reported_date")
+    elif isinstance(payload, list):
+        raw_segments = payload
+        fiscal_date_ending = None
+        reported_date = None
+    else:
+        raw_segments = None
+        fiscal_date_ending = None
+        reported_date = None
+
+    if isinstance(raw_segments, str):
+        raw_segments = [{"content": raw_segments}]
+    segments = []
+    if isinstance(raw_segments, list):
+        for item in raw_segments:
+            if isinstance(item, str):
+                item = {"content": item}
+            if not isinstance(item, dict):
+                continue
+            content = next((item.get(key) for key in ("content", "text", "paragraph", "utterance") if item.get(key)), None)
+            if content:
+                segments.append({
+                    "speaker": item.get("speaker") or item.get("speaker_name") or "",
+                    "title": item.get("title") or item.get("speaker_title") or "",
+                    "content": str(content),
+                    "sentiment": item.get("sentiment") or "",
+                })
+
+    result = {
+        "ticker": ticker,
+        "quarter": quarter,
+        "fiscal_date_ending": fiscal_date_ending,
+        "reported_date": reported_date,
+        "segments": segments,
+    }
+    if segments:
+        db.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
+    return result
 
 
 def snapshot(ticker):
@@ -291,9 +252,7 @@ def snapshot(ticker):
         return _snapshot(None, None, None, "unavailable")
 
     cached = db.get_market_snapshot(ticker)
-    cacheable_sources = {
-        ALPHAVANTAGE_SOURCE, YAHOO_SOURCE, YAHOO_AV_UNAVAILABLE_SOURCE,
-    }
+    cacheable_sources = {YAHOO_SOURCE}
     cached_pe = None
     if cached:
         fetched = datetime.fromisoformat(cached["fetched_at"].replace("Z", "+00:00"))
@@ -304,8 +263,7 @@ def snapshot(ticker):
             cached_status = "available" if cached_pe is not None and cached_pe > 0 else (
                 "not_meaningful" if cached_pe is not None else "unavailable"
             )
-        # FMP snapshots are intentionally invalidated after removing that
-        # provider, and old Yahoo snapshots are refreshed to update attribution.
+        # Snapshots attributed to a previous provider are refreshed from Yahoo Finance.
         if (
             cached_source in cacheable_sources
             and (cached_pe is None or cached_pe > 0)
@@ -355,41 +313,25 @@ def snapshot(ticker):
     except Exception:
         pass
 
-    estimate = _alphavantage_forward_eps(ticker)
-    if estimate is not None:
-        forward_eps = estimate["eps"]
-        if forward_eps <= 0:
-            forward_pe = None
-            status = "not_meaningful"
-        elif price is not None and price > 0:
-            forward_pe = price / forward_eps
-            status = "available"
-        else:
-            forward_pe = None
-            status = "unavailable"
-        source = ALPHAVANTAGE_SOURCE
-        period_end = estimate["period_end"]
-        analyst_count = estimate["analysts"]
+    forward_eps = yahoo_forward_eps
+    if forward_eps is not None and forward_eps <= 0:
+        forward_pe = None
+        status = "not_meaningful"
+    elif price is not None and forward_eps is not None and forward_eps > 0:
+        forward_pe = price / forward_eps
+        status = "available"
+    elif reported_pe is not None and reported_pe > 0:
+        forward_pe = reported_pe
+        status = "available"
+    elif reported_pe is not None and reported_pe <= 0:
+        forward_pe = None
+        status = "not_meaningful"
     else:
-        forward_eps = yahoo_forward_eps
-        if forward_eps is not None and forward_eps <= 0:
-            forward_pe = None
-            status = "not_meaningful"
-        elif price is not None and forward_eps is not None and forward_eps > 0:
-            forward_pe = price / forward_eps
-            status = "available"
-        elif reported_pe is not None and reported_pe > 0:
-            forward_pe = reported_pe
-            status = "available"
-        elif reported_pe is not None and reported_pe <= 0:
-            forward_pe = None
-            status = "not_meaningful"
-        else:
-            forward_pe = None
-            status = "unavailable"
-        source = YAHOO_AV_UNAVAILABLE_SOURCE if ALPHAVANTAGE_API_KEY else YAHOO_SOURCE
-        period_end = None
-        analyst_count = None
+        forward_pe = None
+        status = "unavailable"
+    source = YAHOO_SOURCE
+    period_end = None
+    analyst_count = None
 
     fetched_at = now_iso()
     db.save_market_snapshot(
