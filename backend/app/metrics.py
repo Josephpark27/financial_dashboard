@@ -518,6 +518,118 @@ def balance_sheet_metric(facts, years_back):
     return concept, periods
 
 
+def liquidity_debt_metric(facts, years_back):
+    """Build quarterly cash, marketable securities, and total reported debt."""
+    cutoff = date.today() - timedelta(days=365 * years_back)
+    calculation_cutoff = cutoff - timedelta(days=365)
+    cash_concept, cash = _instant_metric_series(facts, [
+        "CashAndCashEquivalentsAtCarryingValue",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperation",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    ], calculation_cutoff)
+
+    current_securities_concept, current_securities = _instant_metric_series(facts, [
+        "MarketableSecuritiesCurrent", "AvailableForSaleSecuritiesCurrent", "ShortTermInvestments",
+    ], calculation_cutoff)
+    noncurrent_securities_concept, noncurrent_securities = _instant_metric_series(facts, [
+        "MarketableSecuritiesNoncurrent", "AvailableForSaleSecuritiesNoncurrent",
+        "LongTermMarketableSecurities",
+    ], calculation_cutoff)
+    total_securities_concept = None
+    total_securities = {}
+    if not current_securities and not noncurrent_securities:
+        total_securities_concept, total_securities = _instant_metric_series(facts, [
+            "MarketableSecurities", "AvailableForSaleSecurities",
+        ], calculation_cutoff)
+
+    current_debt_concept, current_debt = _instant_metric_series(facts, [
+        "LongTermDebtCurrent", "CurrentPortionOfLongTermDebt",
+        "LongTermDebtAndFinanceLeaseObligationsCurrent",
+    ], calculation_cutoff)
+    short_debt_concept, short_debt = _instant_metric_series(facts, [
+        "ShortTermBorrowings", "ShortTermDebt", "OtherShortTermBorrowings", "CommercialPaper",
+    ], calculation_cutoff)
+    noncurrent_debt_concept, noncurrent_debt = _instant_metric_series(facts, [
+        "LongTermDebtNoncurrent", "LongTermDebtAndFinanceLeaseObligationsNoncurrent",
+        "LongTermDebt",
+    ], calculation_cutoff)
+
+    if not cash and not (current_securities or noncurrent_securities or total_securities) \
+            and not (current_debt or short_debt or noncurrent_debt):
+        raise ValueError("Could not identify quarterly cash, marketable securities, or debt in SEC facts.")
+
+    period_ends = set(cash) | set(current_securities) | set(noncurrent_securities) | set(total_securities)
+    period_ends |= set(current_debt) | set(short_debt) | set(noncurrent_debt)
+    periods = []
+    for end in sorted(period_ends):
+        if end < calculation_cutoff:
+            continue
+        cash_fact = cash.get(end)
+        security_facts = [
+            series[end] for series in (current_securities, noncurrent_securities, total_securities)
+            if end in series
+        ]
+        debt_facts = [
+            series[end] for series in (current_debt, short_debt, noncurrent_debt)
+            if end in series
+        ]
+        associated_facts = ([cash_fact] if cash_fact else []) + security_facts + debt_facts
+        filing_dates = [fact.get("filed") for fact in associated_facts if fact.get("filed")]
+        metadata = next((fact for fact in associated_facts if fact.get("fp") or fact.get("fy")), {})
+        fiscal_period = metadata.get("fp")
+        fiscal_year = metadata.get("fy")
+        if fiscal_period == "FY":
+            fiscal_period = "Q4"
+        if fiscal_period not in {"Q1", "Q2", "Q3", "Q4"}:
+            fiscal_period = f"Q{(end.month - 1) // 3 + 1}"
+        if fiscal_year is None:
+            fiscal_year = end.year
+        periods.append({
+            "period_end": end.isoformat(),
+            "fiscal_period": f"{int(fiscal_year)} {fiscal_period}",
+            "filed": min(filing_dates) if filing_dates else None,
+            "cash": cash_fact["value"] if cash_fact else None,
+            "marketable_securities": sum(fact["value"] for fact in security_facts) if security_facts else None,
+            "debt": sum(fact["value"] for fact in debt_facts) if debt_facts else None,
+        })
+
+    for field in ("cash", "marketable_securities", "debt"):
+        for index, row in enumerate(periods):
+            current_value = row[field]
+            previous = periods[index - 1] if index >= 1 else None
+            previous_year = periods[index - 4] if index >= 4 else None
+            current_end = date.fromisoformat(row["period_end"])
+            quarter_gap = (
+                (current_end - date.fromisoformat(previous["period_end"])).days
+                if previous else None
+            )
+            year_gap = (
+                (current_end - date.fromisoformat(previous_year["period_end"])).days
+                if previous_year else None
+            )
+
+            def change_from(comparison, day_gap, min_days, max_days):
+                if (current_value is None or comparison is None or comparison[field] in (None, 0)
+                        or day_gap is None or not min_days <= day_gap <= max_days):
+                    return None
+                return (current_value / comparison[field] - 1) * 100
+
+            row[f"{field}_qoq_pct"] = change_from(previous, quarter_gap, 70, 120)
+            row[f"{field}_yoy_pct"] = change_from(previous_year, year_gap, 330, 400)
+
+    def concept_names(*values):
+        return " + ".join(dict.fromkeys(value for value in values if value)) or "unavailable"
+
+    concepts = [
+        f"cash: {concept_names(cash_concept)}",
+        f"marketable securities: {concept_names(current_securities_concept, noncurrent_securities_concept, total_securities_concept)}",
+        f"debt: {concept_names(current_debt_concept, short_debt_concept, noncurrent_debt_concept)}",
+    ]
+    return "; ".join(concepts), [
+        row for row in periods if date.fromisoformat(row["period_end"]) >= cutoff
+    ]
+
+
 def shares_outstanding_metric(facts, years_back):
     """Build quarterly share counts, preferring point-in-time counts when reported."""
     cutoff = date.today() - timedelta(days=365 * years_back)

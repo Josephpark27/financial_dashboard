@@ -16,6 +16,13 @@ type BalanceSheetPoint = {
   period_end: string; fiscal_period: string; filed?: string | null;
   assets: number; liabilities: number; equity: number;
 };
+type LiquidityDebtPoint = {
+  period_end: string; fiscal_period: string; filed?: string | null;
+  cash: number | null; marketable_securities: number | null; debt: number | null;
+  cash_qoq_pct: number | null; cash_yoy_pct: number | null;
+  marketable_securities_qoq_pct: number | null; marketable_securities_yoy_pct: number | null;
+  debt_qoq_pct: number | null; debt_yoy_pct: number | null;
+};
 type SharesOutstandingPoint = {
   period_end: string; fiscal_period: string; filed?: string | null;
   value: number; yoy_pct: number | null; qoq_pct?: number | null; concept?: string;
@@ -36,6 +43,7 @@ type DashboardData = {
   eps_concept?: string; revenue: Metric[]; net_income: Metric[]; eps?: Metric[];
   free_cash_flow_concept?: string; free_cash_flow?: Metric[];
   balance_sheet_concept?: string; balance_sheet?: BalanceSheetPoint[];
+  liquidity_debt_concept?: string; liquidity_debt?: LiquidityDebtPoint[];
   shares_outstanding_concept?: string; shares_outstanding?: SharesOutstandingPoint[];
   pe_history?: PEPoint[];
   cache: Record<string, string>;
@@ -234,6 +242,88 @@ function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
   </section>;
 }
 
+function LiquidityDebtPanel({ rows }: { rows: LiquidityDebtPoint[] }) {
+  const [growthMode, setGrowthMode] = useState<"qoq" | "yoy">("yoy");
+  const chartData = useMemo(() => rows.map(row => ({
+    ...row,
+    label: fiscalShortLabel(row.fiscal_period, row.period_end),
+    cash_change: growthMode === "qoq" ? row.cash_qoq_pct : row.cash_yoy_pct,
+    marketable_securities_change: growthMode === "qoq"
+      ? row.marketable_securities_qoq_pct : row.marketable_securities_yoy_pct,
+    debt_change: growthMode === "qoq" ? row.debt_qoq_pct : row.debt_yoy_pct,
+  })), [rows, growthMode]);
+
+  return <section className="section trend-panel">
+    <header className="trend-panel-header">
+      <div>
+        <h2 className="trend-panel-title">Cash, marketable securities &amp; debt trends</h2>
+        <p className="trend-panel-note">Quarter-end SEC balances. Cash and marketable securities are stacked; debt is shown as a separate bar. Change rates compare each balance with the prior quarter or year.</p>
+      </div>
+    </header>
+    <div className="trend-chart-stack">
+      <div className="card trend-chart-card">
+        <header className="trend-chart-header"><h3 className="section-title">Quarterly cash, marketable securities &amp; debt</h3></header>
+        <div className="trend-chart-wrap">{chartData.length > 0
+          ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
+              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+              <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
+              <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => money(Number(v))} width={86} />
+              <Tooltip
+                cursor={{ fill: "#27272a", fillOpacity: 0.22 }}
+                content={({ active, payload }) => {
+                  const point = payload?.[0]?.payload as LiquidityDebtPoint | undefined;
+                  if (!active || !point) return null;
+                  return <div className="chart-tooltip">
+                    <strong>{point.fiscal_period} · {point.period_end}</strong>
+                    <div><span>Cash</span><b>{money(point.cash)}</b></div>
+                    <div><span>Marketable securities</span><b>{money(point.marketable_securities)}</b></div>
+                    <div><span>Cash + securities</span><b>{money(
+                      point.cash == null || point.marketable_securities == null
+                        ? null : point.cash + point.marketable_securities,
+                    )}</b></div>
+                    <div><span>Debt</span><b>{money(point.debt)}</b></div>
+                  </div>;
+                }}
+              />
+              <Legend formatter={value => value === "cash" ? "Cash" : value === "marketable_securities" ? "Marketable securities" : "Debt"} wrapperStyle={{ color: "#a1a1aa", fontSize: 12 }} />
+              <ReferenceLine y={0} stroke="#52525b" />
+              <Bar dataKey="cash" stackId="liquidity" name="cash" fill="#4ade80" maxBarSize={52} />
+              <Bar dataKey="marketable_securities" stackId="liquidity" name="marketable_securities" fill="#60a5fa" radius={[4, 4, 0, 0]} maxBarSize={52} />
+              <Bar dataKey="debt" name="debt" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={52} />
+            </BarChart></ResponsiveContainer>
+          : <div className="empty-trend-note">Quarterly cash, marketable securities, and debt are not available in SEC facts for this ticker.</div>}
+        </div>
+      </div>
+      <div className="card trend-chart-card">
+        <header className="trend-chart-header">
+          <h3 className="section-title">Cash, marketable securities &amp; debt {growthMode.toUpperCase()} change</h3>
+          <div className="segmented-group" role="group" aria-label="Liquidity and debt change period">
+            <span className="control-label">Change</span>
+            <div className="segmented-control">
+              <button type="button" aria-pressed={growthMode === "qoq"} onClick={() => setGrowthMode("qoq")}>QoQ</button>
+              <button type="button" aria-pressed={growthMode === "yoy"} onClick={() => setGrowthMode("yoy")}>YoY</button>
+            </div>
+          </div>
+        </header>
+        <div className="trend-chart-wrap">{chartData.length > 0
+          ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 2, bottom: 8 }}>
+              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+              <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
+              <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => `${Number(v).toFixed(0)}%`} width={54} />
+              <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [v == null ? "—" : `${Number(v).toFixed(1)}%`, growthMode.toUpperCase()]} />
+              <Legend formatter={value => value === "cash_change" ? "Cash" : value === "marketable_securities_change" ? "Marketable securities" : "Debt"} wrapperStyle={{ color: "#a1a1aa", fontSize: 12 }} />
+              <ReferenceLine y={0} stroke="#71717a" />
+              <Bar dataKey="cash_change" name="cash_change" fill="#4ade80" radius={[4, 4, 0, 0]} maxBarSize={52} />
+              <Bar dataKey="marketable_securities_change" name="marketable_securities_change" fill="#60a5fa" radius={[4, 4, 0, 0]} maxBarSize={52} />
+              <Bar dataKey="debt_change" name="debt_change" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={52} />
+            </BarChart></ResponsiveContainer>
+          : <div className="empty-trend-note">Quarterly balance changes are not available in SEC facts for this ticker.</div>}
+        </div>
+      </div>
+    </div>
+  </section>;
+}
+
 function SharesOutstandingPanel({ rows, concept }: { rows: SharesOutstandingPoint[]; concept: string }) {
   const [growthMode, setGrowthMode] = useState<"yoy" | "qoq">("yoy");
   const usesWeightedAverage = concept.toLowerCase().includes("weighted average");
@@ -392,6 +482,7 @@ export default function Dashboard() {
   const epsRows = data?.eps ?? [];
   const freeCashFlowRows = data?.free_cash_flow ?? [];
   const balanceSheetRows = data?.balance_sheet ?? [];
+  const liquidityDebtRows = data?.liquidity_debt ?? [];
   const sharesOutstandingRows = data?.shares_outstanding ?? [];
   const peHistory = data?.pe_history ?? [];
   const latestShares = sharesOutstandingRows.at(-1)?.value;
@@ -482,6 +573,7 @@ export default function Dashboard() {
         ? <MetricTrendPanel title="EPS" rows={epsRows} color="#fafafa" valueFormatter={dollarsPerShare} note={epsRows.some(row => row.source === "derived from annual EPS") ? "Q4 is derived from annual EPS less reported Q1–Q3; TTM sums four quarterly EPS values." : "TTM sums the latest four quarterly EPS values."} />
         : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">EPS trends</h2></header><p className="empty-trend-note">Quarterly EPS facts are not available for this ticker.</p></section>}
       <BalanceSheetPanel rows={balanceSheetRows} />
+      <LiquidityDebtPanel rows={liquidityDebtRows} />
       <SharesOutstandingPanel rows={sharesOutstandingRows} concept={data.shares_outstanding_concept ?? ""} />
       <PETrendPanel rows={peHistory} market={data.market} />
 

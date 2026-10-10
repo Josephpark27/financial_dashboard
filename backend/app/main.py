@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 
 from . import db
-from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, quarter_metric, shares_outstanding_metric
+from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, quarter_metric, shares_outstanding_metric
 from .market import earnings_event, historical_pe, snapshot
 from .sec import SecError, get_company, get_company_facts
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
@@ -72,6 +72,10 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         except ValueError:
             balance_sheet_concept, balance_sheet = "Balance sheet unavailable in SEC facts", []
         try:
+            liquidity_debt_concept, liquidity_debt = liquidity_debt_metric(facts, years)
+        except ValueError:
+            liquidity_debt_concept, liquidity_debt = "Cash, marketable securities, and debt unavailable in SEC facts", []
+        try:
             shares_outstanding_concept, shares_outstanding = shares_outstanding_metric(facts, years)
         except ValueError:
             shares_outstanding_concept, shares_outstanding = "Shares outstanding unavailable in SEC facts", []
@@ -91,12 +95,14 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         "eps_concept": eps_concept,
         "free_cash_flow_concept": free_cash_flow_concept,
         "balance_sheet_concept": balance_sheet_concept,
+        "liquidity_debt_concept": liquidity_debt_concept,
         "shares_outstanding_concept": shares_outstanding_concept,
         "revenue": revenue,
         "net_income": net_income,
         "eps": eps,
         "free_cash_flow": free_cash_flow,
         "balance_sheet": balance_sheet,
+        "liquidity_debt": liquidity_debt,
         "shares_outstanding": shares_outstanding,
         "pe_history": pe_history,
         "cache": {"sec": "SQLite / 24h", "ticker_map": "SQLite / 7d", "market": "SQLite / 15m"},
