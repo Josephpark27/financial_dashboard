@@ -5,8 +5,8 @@ from fastapi import Body, FastAPI, HTTPException, Query
 
 from . import db
 from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, margin_metric, quarter_metric, shares_outstanding_metric
-from .market import earnings_call_transcript, earnings_event, historical_pe, snapshot
-from .gemini import summarize_earnings_call
+from .market import cached_earnings_call_transcript, earnings_call_transcript, earnings_event, historical_pe, snapshot
+from .gemini import cached_earnings_summary, summarize_earnings_call
 from .sec import SecError, get_company, get_company_facts, open_sec_filing_pdf, quarterly_filing_links
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
 
@@ -40,9 +40,30 @@ def open_filing_pdf(url: str = Query(..., min_length=1, max_length=2048)):
 def fetch_earnings_transcript(
     ticker: str = Body(..., embed=True),
     quarter: str = Body(..., embed=True),
+    cached_only: bool = Body(False, embed=True),
 ):
     try:
-        transcript = earnings_call_transcript(ticker, quarter)
+        cached_transcript = cached_earnings_call_transcript(ticker, quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if cached_only and cached_transcript is None:
+        return {
+            "ticker": ticker.strip().upper(),
+            "quarter": quarter.strip().upper(),
+            "fiscal_date_ending": None,
+            "reported_date": None,
+            "segments": [],
+            "summary": None,
+            "summary_error": None,
+            "transcript_cached": False,
+            "summary_cached": False,
+        }
+
+    try:
+        transcript = cached_transcript or earnings_call_transcript(ticker, quarter)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -50,13 +71,18 @@ def fetch_earnings_transcript(
 
     transcript["summary"] = None
     transcript["summary_error"] = None
+    transcript["transcript_cached"] = cached_transcript is not None
+    transcript["summary_cached"] = False
     if transcript["segments"]:
-        try:
-            transcript["summary"] = summarize_earnings_call(transcript)
-        except RuntimeError as exc:
-            # Keep the transcript available if the optional summary service is not configured
-            # or temporarily unavailable.
-            transcript["summary_error"] = str(exc)
+        transcript["summary"] = cached_earnings_summary(transcript)
+        transcript["summary_cached"] = transcript["summary"] is not None
+        if transcript["summary"] is None and not cached_only:
+            try:
+                transcript["summary"] = summarize_earnings_call(transcript)
+            except RuntimeError as exc:
+                # Keep the transcript available if the optional summary service is not configured
+                # or temporarily unavailable.
+                transcript["summary_error"] = str(exc)
     return transcript
 
 

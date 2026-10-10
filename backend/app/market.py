@@ -156,15 +156,19 @@ def _transcript_cache_key(ticker, quarter):
     return f"earnings_transcript:alphavantage:{ticker}:{quarter}"
 
 
-def earnings_call_transcript(ticker, quarter):
-    """Fetch a transcript only when explicitly requested by the dashboard."""
+def _validated_transcript_request(ticker, quarter):
     ticker = ticker.strip().upper()
     quarter = quarter.strip().upper()
     if not re.fullmatch(r"[A-Z0-9.-]{1,10}", ticker):
         raise ValueError("Enter a valid stock ticker.")
     if not re.fullmatch(r"\d{4}Q[1-4]", quarter):
         raise ValueError("Choose a fiscal quarter in YYYYQn format.")
+    return ticker, quarter
 
+
+def cached_earnings_call_transcript(ticker, quarter):
+    """Return a saved transcript without contacting Alpha Vantage, if available."""
+    ticker, quarter = _validated_transcript_request(ticker, quarter)
     cache_key = _transcript_cache_key(ticker, quarter)
     cached_text = db.get_meta(cache_key)
     if cached_text:
@@ -179,6 +183,15 @@ def earnings_call_transcript(ticker, quarter):
                 return cached
         except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
             pass
+    return None
+
+
+def earnings_call_transcript(ticker, quarter):
+    """Fetch a transcript only when explicitly requested by the dashboard."""
+    ticker, quarter = _validated_transcript_request(ticker, quarter)
+    cached = cached_earnings_call_transcript(ticker, quarter)
+    if cached is not None:
+        return cached
 
     if not ALPHAVANTAGE_API_KEY:
         raise RuntimeError("Alpha Vantage is not configured; add ALPHAVANTAGE_API_KEY to backend/.env.")

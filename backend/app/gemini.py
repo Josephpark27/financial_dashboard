@@ -14,23 +14,38 @@ def _summary_cache_key(ticker, quarter, model):
     return f"earnings_summary:gemini:v1:{model}:{ticker}:{quarter}"
 
 
+def cached_earnings_summary(transcript):
+    """Return a locally cached, unexpired Gemini summary without calling Gemini."""
+    ticker = transcript["ticker"]
+    quarter = transcript["quarter"]
+    model = (GEMINI_MODEL or "gemini-3.5-flash-lite").removeprefix("models/")
+    cache_key = _summary_cache_key(ticker, quarter, model)
+    cached_text = db.get_meta(cache_key, max_age_seconds=SUMMARY_CACHE_TTL_SECONDS)
+    if cached_text:
+        try:
+            cached = json.loads(cached_text)
+            if (
+                cached.get("ticker") == ticker
+                and cached.get("quarter") == quarter
+                and cached.get("model") == model
+            ):
+                summary = cached.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    return summary
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return None
+
+
 def summarize_earnings_call(transcript):
     """Return a locally cached Gemini summary or generate and cache one."""
     ticker = transcript["ticker"]
     quarter = transcript["quarter"]
     model = (GEMINI_MODEL or "gemini-3.5-flash-lite").removeprefix("models/")
     cache_key = _summary_cache_key(ticker, quarter, model)
-
-    cached_text = db.get_meta(cache_key, max_age_seconds=SUMMARY_CACHE_TTL_SECONDS)
-    if cached_text:
-        try:
-            cached = json.loads(cached_text)
-            if cached.get("ticker") == ticker and cached.get("quarter") == quarter:
-                summary = cached.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    return summary
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            pass
+    cached_summary = cached_earnings_summary(transcript)
+    if cached_summary is not None:
+        return cached_summary
 
     if not GEMINI_API_KEY:
         raise RuntimeError("Google AI Studio is not configured; add GEMINI_API_KEY to backend/.env.")

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
-  let input: { ticker?: string; quarter?: string };
+  let input: { ticker?: string; quarter?: string; cached_only?: boolean };
   try {
     input = await request.json();
   } catch {
@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
     const response = await fetch(`${backend}/api/earnings-transcript`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticker, quarter }),
+      body: JSON.stringify({ ticker, quarter, cached_only: input.cached_only === true }),
       cache: "no-store",
     });
     const body = await response.json();
