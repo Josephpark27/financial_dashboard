@@ -519,7 +519,7 @@ def balance_sheet_metric(facts, years_back):
 
 
 def shares_outstanding_metric(facts, years_back):
-    """Build quarter-end common shares outstanding and point-in-time growth rates."""
+    """Build quarterly share counts, preferring point-in-time counts when reported."""
     cutoff = date.today() - timedelta(days=365 * years_back)
     calculation_cutoff = cutoff - timedelta(days=365)
     concept, by_end = _instant_metric_series(
@@ -529,6 +529,8 @@ def shares_outstanding_metric(facts, years_back):
         unit="shares",
         merge_concepts=False,
     )
+    if not by_end:
+        concept, by_end = _weighted_average_shares_series(facts, calculation_cutoff)
     if not by_end:
         raise ValueError("Could not identify common shares outstanding in SEC facts.")
 
@@ -575,3 +577,47 @@ def shares_outstanding_metric(facts, years_back):
         row["yoy_pct"] = pct_change(row, previous_year) if previous_year and 330 <= year_gap <= 400 else None
 
     return concept, [row for row in periods if date.fromisoformat(row["period_end"]) >= cutoff]
+
+
+def _weighted_average_shares_series(facts, cutoff):
+    """Use reported quarterly weighted-average basic shares when point counts are absent."""
+    taxonomies = facts.get("facts", {})
+    namespaces = ["us-gaap"] + [name for name in taxonomies if name != "us-gaap"]
+    preferred = [
+        "WeightedAverageNumberOfSharesOutstandingBasic",
+        "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+        "WeightedAverageNumberOfDilutedSharesOutstanding",
+    ]
+    ranked = []
+    for position, concept in enumerate(preferred):
+        for namespace in namespaces:
+            definition = taxonomies.get(namespace, {}).get(concept)
+            if not definition:
+                continue
+            units = definition.get("units", {})
+            raw_rows = units.get("shares", [])
+            if not raw_rows:
+                raw_rows = next((rows for unit, rows in units.items() if unit.lower() == "shares"), [])
+            display_name = concept if namespace == "us-gaap" else f"{namespace}:{concept}"
+            # Weighted averages are duration facts; retain directly reported
+            # quarter values and do not derive Q4 by subtracting annual averages.
+            quarterly = [
+                row for row in _clean_periods(raw_rows)
+                if 70 <= row["days"] <= 120 and row["end"] >= cutoff
+            ]
+            if quarterly:
+                ranked.append((len(quarterly), max(row["end"] for row in quarterly),
+                               position, display_name, quarterly))
+
+    if not ranked:
+        return None, {}
+    ranked.sort(key=lambda item: (item[0], item[1], -item[2]), reverse=True)
+    _, _, _, concept, rows = ranked[0]
+    by_end = {
+        row["end"]: {
+            "value": row["value"], "filed": row.get("filed"),
+            "fy": row.get("fy"), "fp": row.get("fp"), "concept": concept,
+        }
+        for row in rows
+    }
+    return f"{concept} (quarterly weighted average; point-in-time shares unavailable)", by_end

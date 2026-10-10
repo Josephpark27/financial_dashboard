@@ -234,8 +234,15 @@ function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
   </section>;
 }
 
-function SharesOutstandingPanel({ rows }: { rows: SharesOutstandingPoint[] }) {
+function SharesOutstandingPanel({ rows, concept }: { rows: SharesOutstandingPoint[]; concept: string }) {
   const [growthMode, setGrowthMode] = useState<"yoy" | "qoq">("yoy");
+  const usesWeightedAverage = concept.toLowerCase().includes("weighted average");
+  const seriesLabel = usesWeightedAverage
+    ? "Quarterly weighted-average shares"
+    : "Quarter-end shares outstanding";
+  const note = usesWeightedAverage
+    ? "Point-in-time common shares are not tagged in this company's SEC facts, so this chart uses the reported quarterly weighted-average basic share count."
+    : "Quarter-end common shares outstanding reported in SEC filings.";
   const chartData = useMemo(() => rows.map(row => ({
     ...row,
     label: fiscalShortLabel(row.fiscal_period, row.period_end),
@@ -246,27 +253,27 @@ function SharesOutstandingPanel({ rows }: { rows: SharesOutstandingPoint[] }) {
     <header className="trend-panel-header">
       <div>
         <h2 className="trend-panel-title">Shares outstanding trends</h2>
-        <p className="trend-panel-note">Quarter-end common shares outstanding reported in SEC filings.</p>
+        <p className="trend-panel-note">{note}</p>
       </div>
     </header>
     <div className="trend-chart-stack">
       <div className="card trend-chart-card">
-        <header className="trend-chart-header"><h3 className="section-title">Quarter-end shares outstanding</h3></header>
+        <header className="trend-chart-header"><h3 className="section-title">{seriesLabel}</h3></header>
         <div className="trend-chart-wrap">{chartData.length > 0
           ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
               <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
               <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
               <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => shares(Number(v))} width={86} />
-              <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [v == null ? "—" : shares(Number(v)), "Shares outstanding"]} />
+              <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [v == null ? "—" : shares(Number(v)), seriesLabel]} />
               <ReferenceLine y={0} stroke="#52525b" />
               <Bar dataKey="value" fill="#c4b5fd" radius={[4, 4, 0, 0]} maxBarSize={52} />
             </BarChart></ResponsiveContainer>
-          : <div className="empty-trend-note">Quarter-end common shares outstanding are not available in SEC facts for this ticker.</div>}
+          : <div className="empty-trend-note">Share-count facts are not available in SEC facts for this ticker.</div>}
         </div>
       </div>
       <div className="card trend-chart-card">
         <header className="trend-chart-header">
-          <h3 className="section-title">Shares outstanding {growthMode.toUpperCase()} change</h3>
+          <h3 className="section-title">{usesWeightedAverage ? "Weighted-average shares" : "Shares outstanding"} {growthMode.toUpperCase()} change</h3>
           <div className="segmented-group" role="group" aria-label="Shares outstanding growth comparison">
             <span className="control-label">Change</span>
             <div className="segmented-control">
@@ -284,7 +291,7 @@ function SharesOutstandingPanel({ rows }: { rows: SharesOutstandingPoint[] }) {
               <ReferenceLine y={0} stroke="#71717a" />
               <Bar dataKey="growth" fill="#c4b5fd" radius={[4, 4, 0, 0]} maxBarSize={52} />
             </BarChart></ResponsiveContainer>
-          : <div className="empty-trend-note">Shares outstanding change is unavailable for this ticker.</div>}
+          : <div className="empty-trend-note">Share-count change is unavailable for this ticker.</div>}
         </div>
       </div>
     </div>
@@ -475,7 +482,7 @@ export default function Dashboard() {
         ? <MetricTrendPanel title="EPS" rows={epsRows} color="#fafafa" valueFormatter={dollarsPerShare} note={epsRows.some(row => row.source === "derived from annual EPS") ? "Q4 is derived from annual EPS less reported Q1–Q3; TTM sums four quarterly EPS values." : "TTM sums the latest four quarterly EPS values."} />
         : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">EPS trends</h2></header><p className="empty-trend-note">Quarterly EPS facts are not available for this ticker.</p></section>}
       <BalanceSheetPanel rows={balanceSheetRows} />
-      <SharesOutstandingPanel rows={sharesOutstandingRows} />
+      <SharesOutstandingPanel rows={sharesOutstandingRows} concept={data.shares_outstanding_concept ?? ""} />
       <PETrendPanel rows={peHistory} market={data.market} />
 
       <section className="section"><div className="section-title">Quarterly financials</div><div className="table-wrap"><table><thead><tr><th>Fiscal period</th><th>Period end</th><th>Report date</th><th>Revenue</th><th>Revenue YoY</th><th>Net income</th><th>Net income YoY</th></tr></thead><tbody>{table.map(row => <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value)}</td><td>{pct(row.income?.yoy_pct)}</td></tr>)}</tbody></table></div></section>
