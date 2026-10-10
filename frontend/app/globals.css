@@ -49,6 +49,16 @@ h1 { margin:6px 0 0; font-size:34px; letter-spacing:-.04em; }
 .transcript-results { margin-top:22px; }
 .transcript-meta { display:flex; flex-wrap:wrap; gap:8px 16px; color:#a1a1aa; font-size:12px; padding-bottom:12px; border-bottom:1px solid #27272a; }
 .transcript-meta strong { color:#fafafa; }
+.transcript-summary { margin:16px 0 18px; padding:18px; border:1px solid #6d4da3; border-left:4px solid #a78bfa; border-radius:12px; background:#17131f; }
+.transcript-section-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.transcript-section-header h3 { margin:0; color:#fafafa; font-size:16px; }
+.transcript-section-label { color:#c4b5fd; font-size:11px; font-weight:650; letter-spacing:.03em; }
+.transcript-summary p { margin:0; color:#e4e4e7; font-size:14px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.transcript-summary-note { margin:14px 0 0; color:#fbbf24; font-size:12px; line-height:1.5; }
+.transcript-raw { margin-top:18px; padding:18px; border:1px solid #3f3f46; border-radius:12px; background:#111113; }
+.transcript-raw-header { padding-bottom:12px; border-bottom:1px solid #3f3f46; }
+.transcript-raw-header .transcript-section-label { color:#a1a1aa; }
+.transcript-raw .transcript-turn:first-child { padding-top:14px; }
 .transcript-turn { padding:16px 0; border-bottom:1px solid #27272a; }
 .transcript-speaker { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; color:#a1a1aa; font-size:12px; }
 .transcript-speaker div { display:grid; gap:3px; }

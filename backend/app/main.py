@@ -6,6 +6,7 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from . import db
 from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, margin_metric, quarter_metric, shares_outstanding_metric
 from .market import earnings_call_transcript, earnings_event, historical_pe, snapshot
+from .gemini import summarize_earnings_call
 from .sec import SecError, get_company, get_company_facts, open_sec_filing_pdf, quarterly_filing_links
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
 
@@ -41,11 +42,22 @@ def fetch_earnings_transcript(
     quarter: str = Body(..., embed=True),
 ):
     try:
-        return earnings_call_transcript(ticker, quarter)
+        transcript = earnings_call_transcript(ticker, quarter)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    transcript["summary"] = None
+    transcript["summary_error"] = None
+    if transcript["segments"]:
+        try:
+            transcript["summary"] = summarize_earnings_call(transcript)
+        except RuntimeError as exc:
+            # Keep the transcript available if the optional summary service is not configured
+            # or temporarily unavailable.
+            transcript["summary_error"] = str(exc)
+    return transcript
 
 
 def build_metric(facts, cik, years, kind):
@@ -115,7 +127,11 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
             shares_outstanding_concept, shares_outstanding = "Shares outstanding unavailable in SEC facts", []
         pe_history = historical_pe(ticker, eps)
         market = snapshot(ticker)
-        market["earnings_date"], market["earnings_date_type"] = earnings_event(ticker)
+        (
+            market["earnings_date"],
+            market["earnings_date_type"],
+            market["earnings_time_confirmed"],
+        ) = earnings_event(ticker)
         periods_by_end = {}
         for row in [*revenue, *net_income]:
             periods_by_end.setdefault(row["period_end"], {

@@ -94,9 +94,16 @@ def init_db():
                 "UPDATE market_snapshots SET fetched_at = '2000-01-01T00:00:00+00:00'"
             )
 
-def get_meta(key):
+def get_meta(key, max_age_seconds=None):
     with connection() as conn:
-        row = conn.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
+        if max_age_seconds is None:
+            row = conn.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
+        else:
+            age_modifier = f"-{max(0, int(max_age_seconds))} seconds"
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key = ? AND updated_at >= datetime('now', ?)",
+                (key, age_modifier),
+            ).fetchone()
         return row["value"] if row else None
 
 def set_meta(key, value):

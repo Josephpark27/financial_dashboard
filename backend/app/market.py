@@ -346,24 +346,28 @@ def snapshot(ticker):
 
 
 def earnings_event(ticker):
-    """Return the next announced earnings date, or the latest past date."""
+    """Return the next earnings date or latest past date and time-confirmation status."""
     if not MARKET_DATA_ENABLED:
-        return None, None
+        return None, None, False
 
     ticker = ticker.upper()
-    cache_key = f"market_earnings_date:yahoo:v2:{ticker}"
+    cache_key = f"market_earnings_date:yahoo:v3:{ticker}"
     cached_text = db.get_meta(cache_key)
     if cached_text:
         try:
             cached = json.loads(cached_text)
             cached_at = datetime.fromisoformat(cached["cached_at"].replace("Z", "+00:00"))
             if datetime.now(timezone.utc) - cached_at < EARNINGS_DATE_CACHE_TTL:
-                return _earnings_event_time(ticker, cached.get("date")), cached.get("type")
+                return (
+                    cached.get("date"), cached.get("type"),
+                    cached.get("time_confirmed") is True,
+                )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             pass
 
     earnings_date = None
     earnings_date_type = None
+    earnings_time_confirmed = False
     try:
         events = _yfinance_client().Ticker(ticker).get_earnings_dates(limit=12)
         now = datetime.now(timezone.utc)
@@ -387,7 +391,9 @@ def earnings_event(ticker):
         elif previous:
             selected_event, earnings_date_type = previous[-1], "last"
         if selected_event is not None:
-            earnings_date = _earnings_event_time(ticker, selected_event.isoformat())
+            earnings_date, earnings_time_confirmed = _earnings_event_time(
+                ticker, selected_event.isoformat(),
+            )
     except Exception:
         pass
 
@@ -396,21 +402,24 @@ def earnings_event(ticker):
             "cached_at": now_iso(),
             "date": earnings_date,
             "type": earnings_date_type,
+            "time_confirmed": earnings_time_confirmed,
         }))
     except Exception:
         pass
-    return earnings_date, earnings_date_type
+    return earnings_date, earnings_date_type, earnings_time_confirmed
 
 
 def _earnings_event_time(ticker, value):
     if not value or ticker != "AAPL":
-        return value
+        # Yahoo's earnings calendar supplies estimated dates without a reliable
+        # indicator that its timestamp is an announced call time.
+        return value, False
     try:
         event = datetime.fromisoformat(value.replace("Z", "+00:00"))
         # Yahoo's earnings event timestamp differs from Apple's 2:00 PM Pacific
         # conference call time. Preserve the announced event date and use the call time.
         return datetime.combine(
             event.date(), time(14, 0), ZoneInfo("America/Los_Angeles"),
-        ).isoformat()
+        ).isoformat(), True
     except (AttributeError, TypeError, ValueError):
-        return value
+        return value, False
