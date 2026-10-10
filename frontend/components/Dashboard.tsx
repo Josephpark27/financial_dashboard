@@ -46,6 +46,7 @@ type DashboardData = {
   liquidity_debt_concept?: string; liquidity_debt?: LiquidityDebtPoint[];
   shares_outstanding_concept?: string; shares_outstanding?: SharesOutstandingPoint[];
   pe_history?: PEPoint[];
+  quarterly_filings?: { period_end: string; filed: string; form: string; url: string }[];
   cache: Record<string, string>;
 };
 
@@ -451,11 +452,13 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [openingFiling, setOpeningFiling] = useState(false);
+  const [filingMessage, setFilingMessage] = useState("");
   const requestId = useRef(0);
 
   async function load(symbol = ticker, history = years) {
     const currentRequest = ++requestId.current;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setFilingMessage("");
     try {
       const response = await fetch(`/api/dashboard?ticker=${encodeURIComponent(symbol)}&years=${history}`, { cache: "no-store" });
       const body = await response.json();
@@ -467,6 +470,19 @@ export default function Dashboard() {
       if (currentRequest === requestId.current) setLoading(false);
     }
   }
+  async function openFilingPdf(url: string) {
+    setOpeningFiling(true);
+    setFilingMessage("");
+    try {
+      const response = await fetch(`/api/filing-pdf?url=${encodeURIComponent(url)}`, { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Could not open the filing PDF.");
+    } catch (e) {
+      setFilingMessage(e instanceof Error ? e.message : "Could not open the filing PDF.");
+    } finally {
+      setOpeningFiling(false);
+    }
+  }
   useEffect(() => { void load(); }, []);
 
   const table = useMemo(() => {
@@ -475,6 +491,10 @@ export default function Dashboard() {
     for (const row of data?.net_income ?? []) map.set(row.period_end, { ...(map.get(row.period_end) ?? { end: row.period_end }), income: row, fiscal: map.get(row.period_end)?.fiscal ?? row.fiscal_period });
     return [...map.values()].sort((a,b) => b.end.localeCompare(a.end));
   }, [data]);
+  const quarterlyFilings = useMemo(
+    () => new Map((data?.quarterly_filings ?? []).map(filing => [filing.period_end, filing])),
+    [data?.quarterly_filings],
+  );
   const latest = data?.revenue.at(-1);
   const latestIncome = data?.net_income.at(-1);
   const revenueChange = data ? yearOverYearChange(data.revenue) : null;
@@ -577,7 +597,20 @@ export default function Dashboard() {
       <SharesOutstandingPanel rows={sharesOutstandingRows} concept={data.shares_outstanding_concept ?? ""} />
       <PETrendPanel rows={peHistory} market={data.market} />
 
-      <section className="section"><div className="section-title">Quarterly financials</div><div className="table-wrap"><table><thead><tr><th>Fiscal period</th><th>Period end</th><th>Report date</th><th>Revenue</th><th>Revenue YoY</th><th>Net income</th><th>Net income YoY</th></tr></thead><tbody>{table.map(row => <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value)}</td><td>{pct(row.income?.yoy_pct)}</td></tr>)}</tbody></table></div></section>
+      <section className="section"><div className="section-title">Quarterly financials</div><div className="table-wrap"><table><thead><tr><th>Fiscal period</th><th>Period end</th><th>Report date</th><th>Revenue</th><th>Revenue YoY</th><th>Net income</th><th>Net income YoY</th><th>Documents</th></tr></thead><tbody>{table.map(row => {
+        const filing = quarterlyFilings.get(row.end);
+        const form = row.fiscal?.endsWith("Q4") ? "10-K" : "10-Q";
+        const fiscalLabel = row.fiscal ?? quarterLabel(row.end);
+        const secSearch = `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(`${form} ${row.end}`)}&ciks=${data.company.cik}&dateRange=all`;
+        const slidesSearch = `https://www.google.com/search?q=${encodeURIComponent(`${data.company.ticker} ${fiscalLabel} earnings presentation slides`)}`;
+        return <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value)}</td><td>{pct(row.income?.yoy_pct)}</td><td className="quarter-actions-cell"><details name="quarter-documents" className="quarter-actions"><summary aria-label={`Open documents for ${fiscalLabel}`} title={`Open documents for ${fiscalLabel}`}>⋮</summary><div className="quarter-actions-menu">
+          {filing
+            ? <button type="button" disabled={openingFiling} onClick={() => void openFilingPdf(filing.url)}>{openingFiling ? "Opening PDF…" : `Open ${filing.form} PDF`}</button>
+            : <a href={secSearch} target="_blank" rel="noreferrer">Search SEC {form} filings</a>}
+          <a href={slidesSearch} target="_blank" rel="noreferrer">Search presentation slides</a>
+          {filingMessage && <span className="quarter-actions-message" role="status">{filingMessage}</span>}
+        </div></details></td></tr>;
+      })}</tbody></table></div></section>
       <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • balance sheet <strong>{data.balance_sheet_concept ?? "unavailable"}</strong> • shares outstanding <strong>{data.shares_outstanding_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
     </>}
   </main>;

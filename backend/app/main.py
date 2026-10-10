@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Query
 from . import db
 from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, quarter_metric, shares_outstanding_metric
 from .market import earnings_event, historical_pe, snapshot
-from .sec import SecError, get_company, get_company_facts
+from .sec import SecError, get_company, get_company_facts, open_sec_filing_pdf, quarterly_filing_links
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
 
 
@@ -21,6 +21,17 @@ app = FastAPI(title="Local SEC Financial Dashboard API", lifespan=lifespan)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/filing-pdf")
+def open_filing_pdf(url: str = Query(..., min_length=1, max_length=2048)):
+    try:
+        open_sec_filing_pdf(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "opened"}
 
 
 def build_metric(facts, cik, years, kind):
@@ -82,6 +93,14 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         pe_history = historical_pe(ticker, eps)
         market = snapshot(ticker)
         market["earnings_date"], market["earnings_date_type"] = earnings_event(ticker)
+        periods_by_end = {}
+        for row in [*revenue, *net_income]:
+            periods_by_end.setdefault(row["period_end"], {
+                "period_end": row["period_end"],
+                "fiscal_period": row.get("fiscal_period"),
+                "filed": row.get("filed"),
+            })
+        quarterly_filings = quarterly_filing_links(company["cik"], list(periods_by_end.values()))
     except SecError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -105,5 +124,6 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         "liquidity_debt": liquidity_debt,
         "shares_outstanding": shares_outstanding,
         "pe_history": pe_history,
+        "quarterly_filings": quarterly_filings,
         "cache": {"sec": "SQLite / 24h", "ticker_map": "SQLite / 7d", "market": "SQLite / 15m"},
     }
