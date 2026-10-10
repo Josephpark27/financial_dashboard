@@ -1,8 +1,9 @@
 from bisect import bisect_right
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, time, timezone, timedelta
 import json
 import math
 from threading import Lock
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -15,6 +16,7 @@ YAHOO_SOURCE = "Yahoo Finance"
 YAHOO_AV_UNAVAILABLE_SOURCE = "Yahoo Finance (Alpha Vantage unavailable)"
 MARKET_SNAPSHOT_TTL = timedelta(minutes=15)
 ESTIMATE_CACHE_TTL = timedelta(hours=24)
+EARNINGS_DATE_CACHE_TTL = timedelta(hours=24)
 HISTORICAL_CLOSE_CACHE_TTL = timedelta(hours=24)
 EMPTY_HISTORICAL_CLOSE_CACHE_TTL = timedelta(minutes=15)
 _YFINANCE_CACHE_LOCK = Lock()
@@ -126,6 +128,7 @@ def historical_pe(ticker, eps_rows):
 def _snapshot(
     price, forward_pe, fetched_at, forward_pe_status, forward_eps=None,
     forward_period_end=None, forward_pe_analysts=None, market_source=None,
+    market_change=None, market_change_percent=None,
 ):
     return {
         "market_price": price,
@@ -135,6 +138,8 @@ def _snapshot(
         "forward_period_end": forward_period_end,
         "forward_pe_analysts": forward_pe_analysts,
         "market_source": market_source,
+        "market_change": market_change,
+        "market_change_percent": market_change_percent,
         "fetched_at": fetched_at,
     }
 
@@ -308,19 +313,36 @@ def snapshot(ticker):
                 cached.get("market_price"), cached_pe, cached["fetched_at"], cached_status,
                 cached.get("forward_eps"), cached.get("forward_period_end"),
                 cached.get("forward_pe_analysts"), cached_source,
+                cached.get("market_change"), cached.get("market_change_percent"),
             )
 
     price = None
+    market_change = None
+    market_change_percent = None
     reported_pe = None
     yahoo_forward_eps = None
     try:
         yf = _yfinance_client()
         info = yf.Ticker(ticker).info or {}
-        price = next((value for value in (
+        current_price = next((value for value in (
             _number(info.get("regularMarketPrice")),
             _number(info.get("currentPrice")),
-            _number(info.get("previousClose")),
         ) if value is not None and value > 0), None)
+        previous_close = _first_number(
+            info, "regularMarketPreviousClose", "previousClose",
+        )
+        price = current_price or (previous_close if previous_close and previous_close > 0 else None)
+        market_change = _first_number(info, "regularMarketChange", "regularMarketChangeAmount")
+        reported_change_percent = _first_number(
+            info, "regularMarketChangePercent", "regularMarketChangePercentChange",
+        )
+        if market_change is None and current_price is not None and previous_close:
+            market_change = current_price - previous_close
+        market_change_percent = reported_change_percent
+        if market_change is not None and previous_close:
+            market_change_percent = market_change / previous_close * 100
+        elif market_change_percent is not None and previous_close:
+            market_change = previous_close * market_change_percent / 100
         reported_pe = _number(info.get("forwardPE"))
         yahoo_forward_eps = _number(info.get("forwardEps"))
     except Exception:
@@ -366,5 +388,80 @@ def snapshot(ticker):
     db.save_market_snapshot(
         ticker, price, forward_pe, fetched_at, status,
         forward_eps, period_end, analyst_count, source,
+        market_change, market_change_percent,
     )
-    return _snapshot(price, forward_pe, fetched_at, status, forward_eps, period_end, analyst_count, source)
+    return _snapshot(
+        price, forward_pe, fetched_at, status, forward_eps, period_end,
+        analyst_count, source, market_change, market_change_percent,
+    )
+
+
+def earnings_event(ticker):
+    """Return the next announced earnings date, or the latest past date."""
+    if not MARKET_DATA_ENABLED:
+        return None, None
+
+    ticker = ticker.upper()
+    cache_key = f"market_earnings_date:yahoo:v2:{ticker}"
+    cached_text = db.get_meta(cache_key)
+    if cached_text:
+        try:
+            cached = json.loads(cached_text)
+            cached_at = datetime.fromisoformat(cached["cached_at"].replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) - cached_at < EARNINGS_DATE_CACHE_TTL:
+                return _earnings_event_time(ticker, cached.get("date")), cached.get("type")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+    earnings_date = None
+    earnings_date_type = None
+    try:
+        events = _yfinance_client().Ticker(ticker).get_earnings_dates(limit=12)
+        now = datetime.now(timezone.utc)
+        event_dates = set()
+        for value in getattr(events, "index", []):
+            try:
+                timestamp = value.to_pydatetime() if hasattr(value, "to_pydatetime") else value
+                if not isinstance(timestamp, datetime):
+                    timestamp = datetime.fromisoformat(str(timestamp))
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                event_dates.add(timestamp)
+            except (TypeError, ValueError):
+                continue
+        event_dates = sorted(event_dates)
+        upcoming = [value for value in event_dates if value >= now]
+        previous = [value for value in event_dates if value < now]
+        selected_event = None
+        if upcoming:
+            selected_event, earnings_date_type = upcoming[0], "next"
+        elif previous:
+            selected_event, earnings_date_type = previous[-1], "last"
+        if selected_event is not None:
+            earnings_date = _earnings_event_time(ticker, selected_event.isoformat())
+    except Exception:
+        pass
+
+    try:
+        db.set_meta(cache_key, json.dumps({
+            "cached_at": now_iso(),
+            "date": earnings_date,
+            "type": earnings_date_type,
+        }))
+    except Exception:
+        pass
+    return earnings_date, earnings_date_type
+
+
+def _earnings_event_time(ticker, value):
+    if not value or ticker != "AAPL":
+        return value
+    try:
+        event = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        # Yahoo's earnings event timestamp differs from Apple's 2:00 PM Pacific
+        # conference call time. Preserve the announced event date and use the call time.
+        return datetime.combine(
+            event.date(), time(14, 0), ZoneInfo("America/Los_Angeles"),
+        ).isoformat()
+    except (AttributeError, TypeError, ValueError):
+        return value

@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from . import db
 from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, quarter_metric, shares_outstanding_metric
-from .market import historical_pe, snapshot
+from .market import earnings_event, historical_pe, snapshot
 from .sec import SecError, get_company, get_company_facts
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
 
@@ -77,6 +77,7 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
             shares_outstanding_concept, shares_outstanding = "Shares outstanding unavailable in SEC facts", []
         pe_history = historical_pe(ticker, eps)
         market = snapshot(ticker)
+        market["earnings_date"], market["earnings_date_type"] = earnings_event(ticker)
     except SecError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

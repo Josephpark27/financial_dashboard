@@ -23,7 +23,9 @@ type SharesOutstandingPoint = {
 type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
   market: {
-    market_price: number | null; forward_pe: number | null;
+    market_price: number | null; market_change: number | null;
+    market_change_percent: number | null; forward_pe: number | null;
+    earnings_date: string | null; earnings_date_type: "next" | "last" | null;
     forward_pe_status: "available" | "not_meaningful" | "unavailable";
     forward_eps: number | null; forward_period_end: string | null;
     forward_pe_analysts: number | null; market_source: string | null;
@@ -61,6 +63,22 @@ function dollarsPerShare(value: number | null | undefined) {
   return value == null || Number.isNaN(value) ? "—" : `$${value.toFixed(2)}`;
 }
 function pct(value: number | null | undefined) { return value == null ? "—" : `${value.toFixed(1)}%`; }
+function signedMoney(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+function signedPct(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}${Math.abs(value).toFixed(2)}%`;
+}
+function displayDateTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  }).format(new Date(value));
+}
 function quarterLabel(date: string) { const d = new Date(`${date}T00:00:00Z`); return `${d.getUTCFullYear()} Q${Math.floor(d.getUTCMonth()/3)+1}`; }
 function fiscalShortLabel(fiscalPeriod: string | undefined, periodEnd: string) {
   const fiscal = fiscalPeriod?.match(/^(\d{4})\s+(Q\d)$/);
@@ -328,6 +346,10 @@ export default function Dashboard() {
   const balanceSheetRows = data?.balance_sheet ?? [];
   const sharesOutstandingRows = data?.shares_outstanding ?? [];
   const peHistory = data?.pe_history ?? [];
+  const dailyChange = data?.market.market_change ?? null;
+  const dailyChangePercent = data?.market.market_change_percent ?? null;
+  const dailyDirectionValue = dailyChange ?? dailyChangePercent ?? 0;
+  const dailyDirection = dailyDirectionValue > 0 ? "up" : dailyDirectionValue < 0 ? "down" : "flat";
 
   return <main className="container">
     <header className="header">
@@ -341,9 +363,26 @@ export default function Dashboard() {
 
     {error && <div className="error">{error}</div>}
     {data && <>
-      <div className="card" style={{ marginBottom: 14 }}><strong>{data.company.name}</strong> <span className="badge">{data.company.ticker}</span><span className="badge" style={{ marginLeft: 6 }}>{data.company.exchange || "SEC"}</span></div>
+      <div className="card company-banner">
+        <div className="company-identity"><strong>{data.company.name}</strong><span className="badge">{data.company.ticker}</span><span className="badge">{data.company.exchange || "SEC"}</span></div>
+        <div className="stock-quote">
+          <div><div className="stock-price-label">Current stock price</div><div className="stock-price">{data.market.market_price == null ? "—" : `$${data.market.market_price.toFixed(2)}`}</div></div>
+          <div className={`stock-day-change ${dailyDirection}`}>
+            <span className={`stock-direction-arrow ${dailyDirection}`} role="img" aria-label={dailyDirection === "up" ? "Up" : dailyDirection === "down" ? "Down" : "No change"}>
+              {dailyDirection === "up" ? "↑" : dailyDirection === "down" ? "↓" : "→"}
+            </span>
+            <span className="stock-day-values">{signedMoney(data.market.market_change)}({signedPct(data.market.market_change_percent)})</span>
+            <span className="stock-day-label">Past day</span>
+          </div>
+          <div className="earnings-date-note">
+            {data.market.earnings_date && data.market.earnings_date_type
+              ? `${data.market.earnings_date_type === "next" ? "Next" : "Last"} earnings date: ${displayDateTime(data.market.earnings_date)}`
+              : "Earnings date unavailable"}
+          </div>
+        </div>
+        <div className="stock-price-note">Market snapshot cached 15 min</div>
+      </div>
       <section className="grid">
-        <div className="card"><div className="metric-label">Current stock price</div><div className="metric-value">{data.market.market_price == null ? "—" : `$${data.market.market_price.toFixed(2)}`}</div><div className="metric-note">Market snapshot cached 15 min</div></div>
         <div className="card"><div className="metric-label">Latest quarterly revenue</div><div className="metric-value">{money(latest?.value)}</div><div className="metric-note">{latest?.period_end ?? "—"}</div></div>
         <div className="card"><div className="metric-label">Latest revenue YoY</div><div className="metric-value">{pct(latest?.yoy_pct)}</div><div className="metric-note">Compared with 4 quarters prior</div></div>
         <div className="card"><div className="metric-label">Forward P/E</div><div className="metric-value">{data.market.forward_pe_status === "not_meaningful" ? "N/M" : data.market.forward_pe == null ? "—" : data.market.forward_pe.toFixed(2)}</div><div className="metric-note">{forwardPeNote(data.market)}</div></div>

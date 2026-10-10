@@ -15,7 +15,25 @@ h1 { margin:6px 0 0; font-size:34px; letter-spacing:-.04em; }
 .input:focus, .select:focus { border-color:#71717a; }
 .button { background:#fafafa; color:#09090b; border:0; border-radius:10px; padding:11px 16px; font-weight:700; }
 .button:disabled { opacity:.5; cursor:wait; }
-.grid { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:14px; }
+.company-banner { margin-bottom:14px; }
+.company-identity { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.company-identity strong { font-size:16px; }
+.stock-quote { display:flex; flex-direction:column; align-items:flex-start; gap:2px; margin-top:12px; }
+.stock-price-label { color:#a1a1aa; font-size:12px; }
+.stock-price { font-size:30px; font-weight:750; letter-spacing:-.04em; }
+.stock-day-change { display:inline-flex; align-items:center; gap:7px; font-size:14px; font-weight:700; }
+.stock-day-change.up .stock-day-values { color:#4ade80; }
+.stock-day-change.down .stock-day-values { color:#f87171; }
+.stock-day-change.flat .stock-day-values { color:#a1a1aa; }
+.stock-direction-arrow { font-size:18px; line-height:1; }
+.stock-direction-arrow.up { color:#4ade80; }
+.stock-direction-arrow.down { color:#f87171; }
+.stock-direction-arrow.flat { color:#a1a1aa; }
+.stock-day-label { color:#fafafa; font-size:12px; font-weight:500; }
+.stock-price-note { color:#71717a; font-size:12px; font-weight:500; }
+.earnings-date-note { color:#a1a1aa; font-size:12px; margin-top:2px; }
+.stock-price-note { margin-top:4px; }
+.grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:14px; }
 .card { background:#111113; border:1px solid #27272a; border-radius:16px; padding:18px; }
 .metric-label { color:#a1a1aa; font-size:13px; }
 .metric-value { font-size:25px; font-weight:750; margin-top:7px; letter-spacing:-.03em; }
