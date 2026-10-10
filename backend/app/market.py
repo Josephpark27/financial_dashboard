@@ -128,7 +128,7 @@ def historical_pe(ticker, eps_rows):
 def _snapshot(
     price, forward_pe, fetched_at, forward_pe_status, forward_eps=None,
     forward_period_end=None, forward_pe_analysts=None, market_source=None,
-    market_change=None, market_change_percent=None,
+    market_change=None, market_change_percent=None, market_cap=None, trailing_pe=None,
 ):
     return {
         "market_price": price,
@@ -140,6 +140,8 @@ def _snapshot(
         "market_source": market_source,
         "market_change": market_change,
         "market_change_percent": market_change_percent,
+        "market_cap": market_cap,
+        "trailing_pe": trailing_pe,
         "fetched_at": fetched_at,
     }
 
@@ -314,11 +316,14 @@ def snapshot(ticker):
                 cached.get("forward_eps"), cached.get("forward_period_end"),
                 cached.get("forward_pe_analysts"), cached_source,
                 cached.get("market_change"), cached.get("market_change_percent"),
+                cached.get("market_cap"), cached.get("trailing_pe"),
             )
 
     price = None
     market_change = None
     market_change_percent = None
+    market_cap = None
+    trailing_pe = None
     reported_pe = None
     yahoo_forward_eps = None
     try:
@@ -343,6 +348,8 @@ def snapshot(ticker):
             market_change_percent = market_change / previous_close * 100
         elif market_change_percent is not None and previous_close:
             market_change = previous_close * market_change_percent / 100
+        market_cap = _number(info.get("marketCap"))
+        trailing_pe = _number(info.get("trailingPE"))
         reported_pe = _number(info.get("forwardPE"))
         yahoo_forward_eps = _number(info.get("forwardEps"))
     except Exception:
@@ -388,11 +395,11 @@ def snapshot(ticker):
     db.save_market_snapshot(
         ticker, price, forward_pe, fetched_at, status,
         forward_eps, period_end, analyst_count, source,
-        market_change, market_change_percent,
+        market_change, market_change_percent, market_cap, trailing_pe,
     )
     return _snapshot(
         price, forward_pe, fetched_at, status, forward_eps, period_end,
-        analyst_count, source, market_change, market_change_percent,
+        analyst_count, source, market_change, market_change_percent, market_cap, trailing_pe,
     )
 
 

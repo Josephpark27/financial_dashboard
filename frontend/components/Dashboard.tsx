@@ -24,7 +24,8 @@ type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
   market: {
     market_price: number | null; market_change: number | null;
-    market_change_percent: number | null; forward_pe: number | null;
+    market_change_percent: number | null; market_cap: number | null;
+    trailing_pe: number | null; forward_pe: number | null;
     earnings_date: string | null; earnings_date_type: "next" | "last" | null;
     forward_pe_status: "available" | "not_meaningful" | "unavailable";
     forward_eps: number | null; forward_period_end: string | null;
@@ -73,6 +74,18 @@ function signedPct(value: number | null | undefined) {
   const sign = value > 0 ? "+" : value < 0 ? "−" : "";
   return `${sign}${Math.abs(value).toFixed(2)}%`;
 }
+function signedFinancialMoney(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}${money(Math.abs(value))}`;
+}
+function yearOverYearChange(rows: Metric[]) {
+  const current = rows.at(-1);
+  const prior = rows.at(-5);
+  if (!current || !prior || current.yoy_pct == null || prior.value === 0) return null;
+  const amount = current.value - prior.value;
+  return { amount, percent: amount / Math.abs(prior.value) * 100 };
+}
 function displayDateTime(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: "short", day: "numeric", year: "numeric",
@@ -88,6 +101,31 @@ function fiscalShortLabel(fiscalPeriod: string | undefined, periodEnd: string) {
 }
 function shortPeriodLabel(row: Metric) {
   return fiscalShortLabel(row.fiscal_period, row.period_end);
+}
+
+function OverviewChange({ amount, percent }: { amount: number | null; percent: number | null }) {
+  const direction = amount == null || amount === 0 ? "flat" : amount > 0 ? "up" : "down";
+  const arrow = direction === "up" ? "↑" : direction === "down" ? "↓" : "→";
+  return <div className={`overview-change ${direction}`} aria-label={amount == null || percent == null
+    ? "Year-over-year change unavailable"
+    : `Year-over-year change ${signedFinancialMoney(amount)} ${signedPct(percent)}`}>
+    <span className="overview-change-arrow" aria-hidden="true">{arrow}</span>
+    <span className="overview-change-values">{amount == null || percent == null
+      ? "—"
+      : `${signedFinancialMoney(amount)} (${signedPct(percent)})`}</span>
+  </div>;
+}
+
+function QuarterlyOverviewCard({ title, row, change }: {
+  title: string; row: Metric | undefined;
+  change: { amount: number; percent: number } | null;
+}) {
+  return <div className="card overview-card">
+    <div className="metric-label">{title}</div>
+    <div className="metric-value">{money(row?.value)}</div>
+    <OverviewChange amount={change?.amount ?? null} percent={change?.percent ?? null} />
+    <div className="metric-note">{row ? `${shortPeriodLabel(row)} · YoY change` : "Latest quarter unavailable"}</div>
+  </div>;
 }
 
 function MetricTrendPanel({ title, rows, color, valueFormatter = money, note }: {
@@ -341,11 +379,34 @@ export default function Dashboard() {
     return [...map.values()].sort((a,b) => b.end.localeCompare(a.end));
   }, [data]);
   const latest = data?.revenue.at(-1);
+  const latestIncome = data?.net_income.at(-1);
+  const revenueChange = data ? yearOverYearChange(data.revenue) : null;
+  const incomeChange = data ? yearOverYearChange(data.net_income) : null;
   const epsRows = data?.eps ?? [];
   const freeCashFlowRows = data?.free_cash_flow ?? [];
   const balanceSheetRows = data?.balance_sheet ?? [];
   const sharesOutstandingRows = data?.shares_outstanding ?? [];
   const peHistory = data?.pe_history ?? [];
+  const latestShares = sharesOutstandingRows.at(-1)?.value;
+  const marketCapFromShares = data?.market.market_price != null && latestShares != null && latestShares > 0
+    ? data.market.market_price * latestShares
+    : null;
+  const currentMarketCap = data?.market.market_cap ?? marketCapFromShares;
+  const marketCapNote = data?.market.market_cap != null
+    ? "Current market data"
+    : marketCapFromShares != null ? "Price × latest SEC share count" : "Unavailable";
+  const latestTtmEps = epsRows.at(-1)?.ttm_value ?? null;
+  const trailingPeNotMeaningful = latestTtmEps != null
+    ? latestTtmEps <= 0
+    : data?.market.trailing_pe != null && data.market.trailing_pe <= 0;
+  const trailingPe = latestTtmEps != null
+    ? latestTtmEps > 0 && data?.market.market_price != null
+      ? data.market.market_price / latestTtmEps
+      : null
+    : data?.market.trailing_pe ?? null;
+  const trailingPeNote = latestTtmEps != null
+    ? "Current price ÷ latest SEC TTM EPS"
+    : "Yahoo Finance trailing P/E";
   const dailyChange = data?.market.market_change ?? null;
   const dailyChangePercent = data?.market.market_change_percent ?? null;
   const dailyDirectionValue = dailyChange ?? dailyChangePercent ?? 0;
@@ -371,7 +432,7 @@ export default function Dashboard() {
             <span className={`stock-direction-arrow ${dailyDirection}`} role="img" aria-label={dailyDirection === "up" ? "Up" : dailyDirection === "down" ? "Down" : "No change"}>
               {dailyDirection === "up" ? "↑" : dailyDirection === "down" ? "↓" : "→"}
             </span>
-            <span className="stock-day-values">{signedMoney(data.market.market_change)}({signedPct(data.market.market_change_percent)})</span>
+            <span className="stock-day-values">{signedMoney(data.market.market_change)} ({signedPct(data.market.market_change_percent)})</span>
             <span className="stock-day-label">Past day</span>
           </div>
           <div className="earnings-date-note">
@@ -382,10 +443,27 @@ export default function Dashboard() {
         </div>
         <div className="stock-price-note">Market snapshot cached 15 min</div>
       </div>
-      <section className="grid">
-        <div className="card"><div className="metric-label">Latest quarterly revenue</div><div className="metric-value">{money(latest?.value)}</div><div className="metric-note">{latest?.period_end ?? "—"}</div></div>
-        <div className="card"><div className="metric-label">Latest revenue YoY</div><div className="metric-value">{pct(latest?.yoy_pct)}</div><div className="metric-note">Compared with 4 quarters prior</div></div>
-        <div className="card"><div className="metric-label">Forward P/E</div><div className="metric-value">{data.market.forward_pe_status === "not_meaningful" ? "N/M" : data.market.forward_pe == null ? "—" : data.market.forward_pe.toFixed(2)}</div><div className="metric-note">{forwardPeNote(data.market)}</div></div>
+      <section className="section overview-section">
+        <h2 className="overview-title">Overview</h2>
+        <div className="overview-grid">
+          <div className="card overview-card">
+            <div className="metric-label">Current market cap</div>
+            <div className="metric-value">{money(currentMarketCap)}</div>
+            <div className="metric-note">{marketCapNote}</div>
+          </div>
+          <QuarterlyOverviewCard title="Latest quarterly revenue" row={latest} change={revenueChange} />
+          <QuarterlyOverviewCard title="Latest quarterly net income" row={latestIncome} change={incomeChange} />
+          <div className="card overview-card">
+            <div className="metric-label">TTM trailing P/E</div>
+            <div className="metric-value">{trailingPeNotMeaningful ? "N/M" : trailingPe == null ? "—" : `${trailingPe.toFixed(2)}x`}</div>
+            <div className="metric-note">{trailingPeNotMeaningful ? "TTM EPS is nonpositive" : trailingPeNote}</div>
+          </div>
+          <div className="card overview-card">
+            <div className="metric-label">Forward P/E</div>
+            <div className="metric-value">{data.market.forward_pe_status === "not_meaningful" ? "N/M" : data.market.forward_pe == null ? "—" : `${data.market.forward_pe.toFixed(2)}x`}</div>
+            <div className="metric-note">{forwardPeNote(data.market)}</div>
+          </div>
+        </div>
       </section>
 
       <MetricTrendPanel title="Revenue" rows={data.revenue} color="#fafafa" />

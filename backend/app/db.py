@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     market_source TEXT,
     market_change REAL,
     market_change_percent REAL,
+    market_cap REAL,
+    trailing_pe REAL,
     fetched_at TEXT NOT NULL
 );
 """
@@ -69,7 +71,10 @@ def init_db():
     with connection() as conn:
         conn.executescript(SCHEMA)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(market_snapshots)")}
-        refresh_market_snapshots = "market_change" not in columns
+        required_market_columns = {
+            "market_change", "market_change_percent", "market_cap", "trailing_pe",
+        }
+        refresh_market_snapshots = not required_market_columns.issubset(columns)
         additions = {
             "forward_pe_status": "TEXT",
             "forward_eps": "REAL",
@@ -78,6 +83,8 @@ def init_db():
             "market_source": "TEXT",
             "market_change": "REAL",
             "market_change_percent": "REAL",
+            "market_cap": "REAL",
+            "trailing_pe": "REAL",
         }
         for name, kind in additions.items():
             if name not in columns:
@@ -153,20 +160,22 @@ def get_metrics(ticker, metric):
 def save_market_snapshot(
     ticker, price, forward_pe, fetched_at, forward_pe_status=None,
     forward_eps=None, forward_period_end=None, forward_pe_analysts=None, market_source=None,
-    market_change=None, market_change_percent=None,
+    market_change=None, market_change_percent=None, market_cap=None, trailing_pe=None,
 ):
     with connection() as conn:
         conn.execute(
-            "INSERT INTO market_snapshots(ticker,market_price,forward_pe,forward_pe_status,forward_eps,forward_period_end,forward_pe_analysts,market_source,market_change,market_change_percent,fetched_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO market_snapshots(ticker,market_price,forward_pe,forward_pe_status,forward_eps,forward_period_end,forward_pe_analysts,market_source,market_change,market_change_percent,market_cap,trailing_pe,fetched_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(ticker) DO UPDATE SET market_price=excluded.market_price,"
             "forward_pe=excluded.forward_pe,forward_pe_status=excluded.forward_pe_status,"
             "forward_eps=excluded.forward_eps,forward_period_end=excluded.forward_period_end,"
             "forward_pe_analysts=excluded.forward_pe_analysts,market_source=excluded.market_source,"
             "market_change=excluded.market_change,market_change_percent=excluded.market_change_percent,"
+            "market_cap=excluded.market_cap,trailing_pe=excluded.trailing_pe,"
             "fetched_at=excluded.fetched_at",
             (ticker, price, forward_pe, forward_pe_status, forward_eps, forward_period_end,
-             forward_pe_analysts, market_source, market_change, market_change_percent, fetched_at),
+             forward_pe_analysts, market_source, market_change, market_change_percent,
+             market_cap, trailing_pe, fetched_at),
         )
 
 def get_market_snapshot(ticker):
