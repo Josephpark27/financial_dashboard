@@ -16,6 +16,10 @@ type BalanceSheetPoint = {
   period_end: string; fiscal_period: string; filed?: string | null;
   assets: number; liabilities: number; equity: number;
 };
+type SharesOutstandingPoint = {
+  period_end: string; fiscal_period: string; filed?: string | null;
+  value: number; yoy_pct: number | null; qoq_pct?: number | null; concept?: string;
+};
 type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
   market: {
@@ -29,6 +33,7 @@ type DashboardData = {
   eps_concept?: string; revenue: Metric[]; net_income: Metric[]; eps?: Metric[];
   free_cash_flow_concept?: string; free_cash_flow?: Metric[];
   balance_sheet_concept?: string; balance_sheet?: BalanceSheetPoint[];
+  shares_outstanding_concept?: string; shares_outstanding?: SharesOutstandingPoint[];
   pe_history?: PEPoint[];
   cache: Record<string, string>;
 };
@@ -41,6 +46,16 @@ function money(value: number | null | undefined) {
   if (x >= 1e9) return `${sign}$${(x / 1e9).toFixed(2)}B`;
   if (x >= 1e6) return `${sign}$${(x / 1e6).toFixed(2)}M`;
   return `${sign}$${x.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+function shares(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "—";
+  const absolute = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (absolute >= 1e12) return `${sign}${(absolute / 1e12).toFixed(2)}T`;
+  if (absolute >= 1e9) return `${sign}${(absolute / 1e9).toFixed(2)}B`;
+  if (absolute >= 1e6) return `${sign}${(absolute / 1e6).toFixed(2)}M`;
+  if (absolute >= 1e3) return `${sign}${(absolute / 1e3).toFixed(1)}K`;
+  return `${sign}${absolute.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 function dollarsPerShare(value: number | null | undefined) {
   return value == null || Number.isNaN(value) ? "—" : `$${value.toFixed(2)}`;
@@ -127,7 +142,7 @@ function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
   return <section className="section trend-panel">
     <header className="trend-panel-header">
       <div>
-        <h2 className="trend-panel-title">Assets = Liabilities + Equity</h2>
+        <h2 className="trend-panel-title">Assets</h2>
         <p className="trend-panel-note">Quarter-end balances from SEC filings. Equity is calculated as assets minus liabilities to reconcile each bar to assets.</p>
       </div>
     </header>
@@ -158,6 +173,63 @@ function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
             <Bar dataKey="equity" stackId="balance" fill="#60a5fa" radius={[4, 4, 0, 0]} maxBarSize={52} />
           </BarChart></ResponsiveContainer>
         : <div className="empty-trend-note">Quarterly assets and liabilities are not available in SEC facts for this ticker.</div>}
+      </div>
+    </div>
+  </section>;
+}
+
+function SharesOutstandingPanel({ rows }: { rows: SharesOutstandingPoint[] }) {
+  const [growthMode, setGrowthMode] = useState<"yoy" | "qoq">("yoy");
+  const chartData = useMemo(() => rows.map(row => ({
+    ...row,
+    label: fiscalShortLabel(row.fiscal_period, row.period_end),
+    growth: growthMode === "yoy" ? row.yoy_pct : row.qoq_pct ?? null,
+  })), [rows, growthMode]);
+
+  return <section className="section trend-panel">
+    <header className="trend-panel-header">
+      <div>
+        <h2 className="trend-panel-title">Shares outstanding trends</h2>
+        <p className="trend-panel-note">Quarter-end common shares outstanding reported in SEC filings.</p>
+      </div>
+    </header>
+    <div className="trend-chart-stack">
+      <div className="card trend-chart-card">
+        <header className="trend-chart-header"><h3 className="section-title">Quarter-end shares outstanding</h3></header>
+        <div className="trend-chart-wrap">{chartData.length > 0
+          ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
+              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+              <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
+              <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => shares(Number(v))} width={86} />
+              <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [v == null ? "—" : shares(Number(v)), "Shares outstanding"]} />
+              <ReferenceLine y={0} stroke="#52525b" />
+              <Bar dataKey="value" fill="#c4b5fd" radius={[4, 4, 0, 0]} maxBarSize={52} />
+            </BarChart></ResponsiveContainer>
+          : <div className="empty-trend-note">Quarter-end common shares outstanding are not available in SEC facts for this ticker.</div>}
+        </div>
+      </div>
+      <div className="card trend-chart-card">
+        <header className="trend-chart-header">
+          <h3 className="section-title">Shares outstanding {growthMode.toUpperCase()} change</h3>
+          <div className="segmented-group" role="group" aria-label="Shares outstanding growth comparison">
+            <span className="control-label">Change</span>
+            <div className="segmented-control">
+              <button type="button" aria-pressed={growthMode === "yoy"} onClick={() => setGrowthMode("yoy")}>YoY</button>
+              <button type="button" aria-pressed={growthMode === "qoq"} onClick={() => setGrowthMode("qoq")}>QoQ</button>
+            </div>
+          </div>
+        </header>
+        <div className="trend-chart-wrap">{chartData.length > 0
+          ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 2, bottom: 8 }}>
+              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+              <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
+              <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => `${v}%`} width={54} />
+              <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [v == null ? "—" : `${Number(v).toFixed(1)}%`, `${growthMode.toUpperCase()} change`]} />
+              <ReferenceLine y={0} stroke="#71717a" />
+              <Bar dataKey="growth" fill="#c4b5fd" radius={[4, 4, 0, 0]} maxBarSize={52} />
+            </BarChart></ResponsiveContainer>
+          : <div className="empty-trend-note">Shares outstanding change is unavailable for this ticker.</div>}
+        </div>
       </div>
     </div>
   </section>;
@@ -254,6 +326,7 @@ export default function Dashboard() {
   const epsRows = data?.eps ?? [];
   const freeCashFlowRows = data?.free_cash_flow ?? [];
   const balanceSheetRows = data?.balance_sheet ?? [];
+  const sharesOutstandingRows = data?.shares_outstanding ?? [];
   const peHistory = data?.pe_history ?? [];
 
   return <main className="container">
@@ -285,10 +358,11 @@ export default function Dashboard() {
         ? <MetricTrendPanel title="EPS" rows={epsRows} color="#fafafa" valueFormatter={dollarsPerShare} note={epsRows.some(row => row.source === "derived from annual EPS") ? "Q4 is derived from annual EPS less reported Q1–Q3; TTM sums four quarterly EPS values." : "TTM sums the latest four quarterly EPS values."} />
         : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">EPS trends</h2></header><p className="empty-trend-note">Quarterly EPS facts are not available for this ticker.</p></section>}
       <BalanceSheetPanel rows={balanceSheetRows} />
+      <SharesOutstandingPanel rows={sharesOutstandingRows} />
       <PETrendPanel rows={peHistory} market={data.market} />
 
       <section className="section"><div className="section-title">Quarterly financials</div><div className="table-wrap"><table><thead><tr><th>Fiscal period</th><th>Period end</th><th>Report date</th><th>Revenue</th><th>Revenue YoY</th><th>Net income</th><th>Net income YoY</th></tr></thead><tbody>{table.map(row => <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value)}</td><td>{pct(row.income?.yoy_pct)}</td></tr>)}</tbody></table></div></section>
-      <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • balance sheet <strong>{data.balance_sheet_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
+      <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • balance sheet <strong>{data.balance_sheet_concept ?? "unavailable"}</strong> • shares outstanding <strong>{data.shares_outstanding_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
     </>}
   </main>;
 }

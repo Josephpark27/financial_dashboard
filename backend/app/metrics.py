@@ -432,7 +432,7 @@ def _instant_quarters_for_concept(raw_rows, concept_name):
     return list(by_end.values())
 
 
-def _instant_metric_series(facts, preferred, cutoff):
+def _instant_metric_series(facts, preferred, cutoff, unit="USD", merge_concepts=True):
     taxonomies = facts.get("facts", {})
     namespaces = ["us-gaap"] + [name for name in taxonomies if name != "us-gaap"]
     ranked = []
@@ -441,7 +441,10 @@ def _instant_metric_series(facts, preferred, cutoff):
             definition = taxonomies.get(namespace, {}).get(concept)
             if not definition:
                 continue
-            raw_rows = definition.get("units", {}).get("USD", [])
+            units = definition.get("units", {})
+            raw_rows = units.get(unit, [])
+            if not raw_rows:
+                raw_rows = next((rows for name, rows in units.items() if name.lower() == unit.lower()), [])
             display_name = concept if namespace == "us-gaap" else f"{namespace}:{concept}"
             rows = _instant_quarters_for_concept(raw_rows, display_name)
             recent = [row for row in rows if row["end"] >= cutoff]
@@ -453,6 +456,9 @@ def _instant_metric_series(facts, preferred, cutoff):
     ranked.sort(key=lambda item: (item[0], -item[1]), reverse=True)
     if not ranked:
         return None, {}
+
+    if not merge_concepts:
+        ranked = ranked[:1]
 
     by_end = {}
     used_concepts = []
@@ -510,3 +516,62 @@ def balance_sheet_metric(facts, years_back):
     for row in periods:
         row["concept"] = concept
     return concept, periods
+
+
+def shares_outstanding_metric(facts, years_back):
+    """Build quarter-end common shares outstanding and point-in-time growth rates."""
+    cutoff = date.today() - timedelta(days=365 * years_back)
+    calculation_cutoff = cutoff - timedelta(days=365)
+    concept, by_end = _instant_metric_series(
+        facts,
+        ["CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"],
+        calculation_cutoff,
+        unit="shares",
+        merge_concepts=False,
+    )
+    if not by_end:
+        raise ValueError("Could not identify common shares outstanding in SEC facts.")
+
+    periods = []
+    for end, fact in sorted(by_end.items()):
+        if end < calculation_cutoff:
+            continue
+        fiscal_period = fact.get("fp")
+        fiscal_year = fact.get("fy")
+        if fiscal_period == "FY":
+            fiscal_period = "Q4"
+        if fiscal_period not in {"Q1", "Q2", "Q3", "Q4"}:
+            fiscal_period = f"Q{(end.month - 1) // 3 + 1}"
+        if fiscal_year is None:
+            fiscal_year = end.year
+        periods.append({
+            "period_end": end.isoformat(),
+            "fiscal_period": f"{int(fiscal_year)} {fiscal_period}",
+            "filed": fact.get("filed"),
+            "value": fact["value"],
+            "concept": fact["concept"],
+        })
+
+    if not periods:
+        raise ValueError("Could not identify quarterly common shares outstanding in SEC facts.")
+
+    def pct_change(current, previous):
+        return ((current["value"] / previous["value"] - 1) * 100
+                if previous and previous["value"] != 0 else None)
+
+    for index, row in enumerate(periods):
+        previous = periods[index - 1] if index else None
+        previous_year = periods[index - 4] if index >= 4 else None
+        current_end = date.fromisoformat(row["period_end"])
+        day_gap = (
+            (current_end - date.fromisoformat(previous["period_end"])).days
+            if previous else None
+        )
+        year_gap = (
+            (current_end - date.fromisoformat(previous_year["period_end"])).days
+            if previous_year else None
+        )
+        row["qoq_pct"] = pct_change(row, previous) if previous and 70 <= day_gap <= 120 else None
+        row["yoy_pct"] = pct_change(row, previous_year) if previous_year and 330 <= year_gap <= 400 else None
+
+    return concept, [row for row in periods if date.fromisoformat(row["period_end"]) >= cutoff]
