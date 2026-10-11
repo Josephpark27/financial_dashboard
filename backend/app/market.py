@@ -189,6 +189,7 @@ def cached_earnings_call_transcript(ticker, quarter):
 def earnings_call_transcript(ticker, quarter):
     """Fetch a transcript only when explicitly requested by the dashboard."""
     ticker, quarter = _validated_transcript_request(ticker, quarter)
+    cache_key = _transcript_cache_key(ticker, quarter)
     cached = cached_earnings_call_transcript(ticker, quarter)
     if cached is not None:
         return cached
