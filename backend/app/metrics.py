@@ -5,6 +5,10 @@ def candidates(facts, kind):
     taxonomies = facts.get("facts", {})
     if kind == "revenue":
         preferred = [
+            # Financial institutions often report consolidated revenue net of
+            # interest expense under this tag, while separately tagging
+            # customer-contract fees as a narrower revenue line.
+            "RevenuesNetOfInterestExpense",
             "RevenueFromContractWithCustomerExcludingAssessedTax",
             "SalesRevenueNet", "Revenues", "SalesRevenueGoodsNet",
             "RevenueFromContractWithCustomerIncludingAssessedTax",
