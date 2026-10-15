@@ -7,7 +7,7 @@ type Metric = {
   period_end: string; start_date?: string; fiscal_period?: string; filed?: string;
   value: number; yoy_pct: number | null; qoq_pct?: number | null;
   ttm_value?: number | null; ttm_yoy_pct?: number | null; ttm_qoq_pct?: number | null;
-  source?: string; concept?: string;
+  source?: string; concept?: string; currency?: string;
 };
 type PEPoint = {
   period_end: string; fiscal_period?: string; price: number; ttm_eps: number; pe: number;
@@ -57,6 +57,7 @@ type DashboardData = {
     forward_pe_analysts: number | null; market_source: string | null;
     fetched_at: string | null;
   };
+  accounting_currency?: string;
   revenue_concept: string; income_concept: string;
   gross_profit_concept?: string; gross_profit?: Metric[]; margins?: MarginPoint[];
   eps_concept?: string; revenue: Metric[]; net_income: Metric[]; eps?: Metric[];
@@ -69,14 +70,23 @@ type DashboardData = {
   cache: Record<string, string>;
 };
 
-function money(value: number | null | undefined) {
+function currencySymbol(currencyCode = "USD") {
+  if (currencyCode === "EUR") return "€";
+  if (currencyCode === "GBP") return "£";
+  if (currencyCode === "JPY" || currencyCode === "CNY") return "¥";
+  if (currencyCode === "CHF") return "CHF ";
+  if (currencyCode === "USD") return "$";
+  return `${currencyCode} `;
+}
+function money(value: number | null | undefined, currencyCode = "USD") {
   if (value == null || Number.isNaN(value)) return "—";
   const sign = value < 0 ? "-" : "";
   const x = Math.abs(value);
-  if (x >= 1e12) return `${sign}$${(x / 1e12).toFixed(2)}T`;
-  if (x >= 1e9) return `${sign}$${(x / 1e9).toFixed(2)}B`;
-  if (x >= 1e6) return `${sign}$${(x / 1e6).toFixed(2)}M`;
-  return `${sign}$${x.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const symbol = currencySymbol(currencyCode);
+  if (x >= 1e12) return `${sign}${symbol}${(x / 1e12).toFixed(2)}T`;
+  if (x >= 1e9) return `${sign}${symbol}${(x / 1e9).toFixed(2)}B`;
+  if (x >= 1e6) return `${sign}${symbol}${(x / 1e6).toFixed(2)}M`;
+  return `${sign}${symbol}${x.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 function shares(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return "—";
@@ -88,8 +98,8 @@ function shares(value: number | null | undefined) {
   if (absolute >= 1e3) return `${sign}${(absolute / 1e3).toFixed(1)}K`;
   return `${sign}${absolute.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
-function dollarsPerShare(value: number | null | undefined) {
-  return value == null || Number.isNaN(value) ? "—" : `$${value.toFixed(2)}`;
+function dollarsPerShare(value: number | null | undefined, currencyCode = "USD") {
+  return value == null || Number.isNaN(value) ? "—" : `${currencySymbol(currencyCode)}${value.toFixed(2)}`;
 }
 function pct(value: number | null | undefined) { return value == null ? "—" : `${value.toFixed(1)}%`; }
 function signedMoney(value: number | null | undefined) {
@@ -102,10 +112,10 @@ function signedPct(value: number | null | undefined) {
   const sign = value > 0 ? "+" : value < 0 ? "−" : "";
   return `${sign}${Math.abs(value).toFixed(2)}%`;
 }
-function signedFinancialMoney(value: number | null | undefined) {
+function signedFinancialMoney(value: number | null | undefined, currencyCode = "USD") {
   if (value == null || Number.isNaN(value)) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "−" : "";
-  return `${sign}${money(Math.abs(value))}`;
+  return `${sign}${money(Math.abs(value), currencyCode)}`;
 }
 function yearOverYearChange(rows: Metric[]) {
   const current = rows.at(-1);
@@ -224,35 +234,39 @@ function SummaryContent({ text }: { text: string }) {
   </div>;
 }
 
-function OverviewChange({ amount, percent }: { amount: number | null; percent: number | null }) {
+function OverviewChange({ amount, percent, currencyCode }: {
+  amount: number | null; percent: number | null; currencyCode: string;
+}) {
   const direction = amount == null || amount === 0 ? "flat" : amount > 0 ? "up" : "down";
   const arrow = direction === "up" ? "↑" : direction === "down" ? "↓" : "→";
   return <div className={`overview-change ${direction}`} aria-label={amount == null || percent == null
     ? "Year-over-year change unavailable"
-    : `Year-over-year change ${signedFinancialMoney(amount)} ${signedPct(percent)}`}>
+    : `Year-over-year change ${signedFinancialMoney(amount, currencyCode)} ${signedPct(percent)}`}>
     <span className="overview-change-arrow" aria-hidden="true">{arrow}</span>
     <span className="overview-change-values">{amount == null || percent == null
       ? "—"
-      : `${signedFinancialMoney(amount)} (${signedPct(percent)})`}</span>
+      : `${signedFinancialMoney(amount, currencyCode)} (${signedPct(percent)})`}</span>
   </div>;
 }
 
-function QuarterlyOverviewCard({ title, row, change }: {
+function QuarterlyOverviewCard({ title, row, change, currencyCode }: {
   title: string; row: Metric | undefined;
   change: { amount: number; percent: number } | null;
+  currencyCode: string;
 }) {
   return <div className="card overview-card">
     <div className="metric-label">{title}</div>
-    <div className="metric-value">{money(row?.value)}</div>
-    <OverviewChange amount={change?.amount ?? null} percent={change?.percent ?? null} />
+    <div className="metric-value">{money(row?.value, currencyCode)}</div>
+    <OverviewChange amount={change?.amount ?? null} percent={change?.percent ?? null} currencyCode={currencyCode} />
     <div className="metric-note">{row ? `${shortPeriodLabel(row)} · YoY change` : "Latest quarter unavailable"}</div>
   </div>;
 }
 
-function MetricTrendPanel({ title, rows, color, valueFormatter = money, note }: {
+function MetricTrendPanel({ title, rows, color, valueFormatter, note, currencyCode = "USD" }: {
   title: string; rows: Metric[]; color: string;
   valueFormatter?: (value: number | null | undefined) => string;
   note?: string;
+  currencyCode?: string;
 }) {
   const [amountMode, setAmountMode] = useState<"quarterly" | "ttm">("quarterly");
   const [growthMode, setGrowthMode] = useState<"yoy" | "qoq">("yoy");
@@ -263,6 +277,7 @@ function MetricTrendPanel({ title, rows, color, valueFormatter = money, note }: 
       ? (growthMode === "yoy" ? row.yoy_pct : row.qoq_pct ?? null)
       : (growthMode === "yoy" ? row.ttm_yoy_pct : row.ttm_qoq_pct),
   })), [rows, amountMode, growthMode]);
+  const formatValue = valueFormatter ?? ((value: number | null | undefined) => money(value, currencyCode));
   const amountLabel = amountMode === "quarterly" ? `Quarterly ${title}` : `${title} TTM`;
   const growthLabel = `${amountMode === "quarterly" ? `Quarterly ${title}` : `${title} TTM`} ${growthMode.toUpperCase()} change`;
 
@@ -289,8 +304,8 @@ function MetricTrendPanel({ title, rows, color, valueFormatter = money, note }: 
         <div className="trend-chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
           <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
           <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
-          <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => valueFormatter(Number(v))} width={86} />
-          <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [v == null ? "—" : valueFormatter(Number(v)), amountLabel]} />
+          <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => formatValue(Number(v))} width={86} />
+          <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} formatter={v => [v == null ? "—" : formatValue(Number(v)), amountLabel]} />
           <ReferenceLine y={0} stroke="#52525b" />
           <Bar dataKey="amount" fill={color} radius={[4, 4, 0, 0]} maxBarSize={52} />
         </BarChart></ResponsiveContainer></div>
@@ -389,7 +404,7 @@ function MarginTrendPanel({ rows }: { rows: MarginPoint[] }) {
   </section>;
 }
 
-function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
+function BalanceSheetPanel({ rows, currencyCode }: { rows: BalanceSheetPoint[]; currencyCode: string }) {
   const chartData = useMemo(() => rows.map(row => ({
     ...row,
     label: fiscalShortLabel(row.fiscal_period, row.period_end),
@@ -408,7 +423,7 @@ function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
         ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
             <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
             <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
-            <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => money(Number(v))} width={86} />
+            <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => money(Number(v), currencyCode)} width={86} />
             <Tooltip
               cursor={{ fill: "#27272a", fillOpacity: 0.22 }}
               content={({ active, payload }) => {
@@ -417,9 +432,9 @@ function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
                 const share = (value: number) => point.assets === 0 ? "—" : pct(value / point.assets * 100);
                 return <div className="chart-tooltip">
                   <strong>{point.fiscal_period} · {point.period_end}</strong>
-                  <div><span>Assets</span><b>{money(point.assets)}</b></div>
-                  <div><span>Equity</span><b>{money(point.equity)} ({share(point.equity)})</b></div>
-                  <div><span>Liabilities</span><b>{money(point.liabilities)} ({share(point.liabilities)})</b></div>
+                  <div><span>Assets</span><b>{money(point.assets, currencyCode)}</b></div>
+                  <div><span>Equity</span><b>{money(point.equity, currencyCode)} ({share(point.equity)})</b></div>
+                  <div><span>Liabilities</span><b>{money(point.liabilities, currencyCode)} ({share(point.liabilities)})</b></div>
                 </div>;
               }}
             />
@@ -434,7 +449,7 @@ function BalanceSheetPanel({ rows }: { rows: BalanceSheetPoint[] }) {
   </section>;
 }
 
-function LiquidityDebtPanel({ rows }: { rows: LiquidityDebtPoint[] }) {
+function LiquidityDebtPanel({ rows, currencyCode }: { rows: LiquidityDebtPoint[]; currencyCode: string }) {
   const [growthMode, setGrowthMode] = useState<"qoq" | "yoy">("yoy");
   const chartData = useMemo(() => rows.map(row => ({
     ...row,
@@ -459,7 +474,7 @@ function LiquidityDebtPanel({ rows }: { rows: LiquidityDebtPoint[] }) {
           ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 8 }}>
               <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
               <XAxis dataKey="label" tick={{ fill: "#a1a1aa", fontSize: 11 }} interval="preserveStartEnd" />
-              <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => money(Number(v))} width={86} />
+              <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={v => money(Number(v), currencyCode)} width={86} />
               <Tooltip
                 cursor={{ fill: "#27272a", fillOpacity: 0.22 }}
                 content={({ active, payload }) => {
@@ -467,13 +482,13 @@ function LiquidityDebtPanel({ rows }: { rows: LiquidityDebtPoint[] }) {
                   if (!active || !point) return null;
                   return <div className="chart-tooltip">
                     <strong>{point.fiscal_period} · {point.period_end}</strong>
-                    <div><span>Cash</span><b>{money(point.cash)}</b></div>
-                    <div><span>Marketable securities</span><b>{money(point.marketable_securities)}</b></div>
+                    <div><span>Cash</span><b>{money(point.cash, currencyCode)}</b></div>
+                    <div><span>Marketable securities</span><b>{money(point.marketable_securities, currencyCode)}</b></div>
                     <div><span>Cash + securities</span><b>{money(
                       point.cash == null || point.marketable_securities == null
                         ? null : point.cash + point.marketable_securities,
-                    )}</b></div>
-                    <div><span>Debt</span><b>{money(point.debt)}</b></div>
+                    currencyCode)}</b></div>
+                    <div><span>Debt</span><b>{money(point.debt, currencyCode)}</b></div>
                   </div>;
                 }}
               />
@@ -816,6 +831,7 @@ export default function Dashboard() {
   }, [table]);
   const latest = data?.revenue.at(-1);
   const latestIncome = data?.net_income.at(-1);
+  const accountingCurrency = data?.accounting_currency ?? "USD";
   const revenueChange = data ? yearOverYearChange(data.revenue) : null;
   const incomeChange = data ? yearOverYearChange(data.net_income) : null;
   const epsRows = data?.eps ?? [];
@@ -893,8 +909,8 @@ export default function Dashboard() {
             <div className="metric-value">{money(currentMarketCap)}</div>
             <div className="metric-note">{marketCapNote}</div>
           </div>
-          <QuarterlyOverviewCard title="Latest quarterly revenue" row={latest} change={revenueChange} />
-          <QuarterlyOverviewCard title="Latest quarterly net income" row={latestIncome} change={incomeChange} />
+          <QuarterlyOverviewCard title="Latest quarterly revenue" row={latest} change={revenueChange} currencyCode={accountingCurrency} />
+          <QuarterlyOverviewCard title="Latest quarterly net income" row={latestIncome} change={incomeChange} currencyCode={accountingCurrency} />
           <div className="card overview-card">
             <div className="metric-label">TTM trailing P/E</div>
             <div className="metric-value">{trailingPeNotMeaningful ? "N/M" : trailingPe == null ? "—" : `${trailingPe.toFixed(2)}x`}</div>
@@ -908,17 +924,17 @@ export default function Dashboard() {
         </div>
       </section>
 
-      <MetricTrendPanel title="Revenue" rows={data.revenue} color="#fafafa" note="Revenue is sales earned before expenses." />
-      <MetricTrendPanel title="Net income" rows={data.net_income} color="#fafafa" note="Net income is profit after expenses and taxes." />
+      <MetricTrendPanel title="Revenue" rows={data.revenue} color="#fafafa" currencyCode={accountingCurrency} note="Revenue is sales earned before expenses." />
+      <MetricTrendPanel title="Net income" rows={data.net_income} color="#fafafa" currencyCode={accountingCurrency} note="Net income is profit after expenses and taxes." />
       <MarginTrendPanel rows={data.margins ?? []} />
       {freeCashFlowRows.length > 0
-        ? <MetricTrendPanel title="Free cash flow" rows={freeCashFlowRows} color="#86efac" note="Free cash flow is operating cash flow minus capital expenditures from SEC cash flow statements." />
+        ? <MetricTrendPanel title="Free cash flow" rows={freeCashFlowRows} color="#86efac" currencyCode={accountingCurrency} note="Free cash flow is operating cash flow minus capital expenditures from SEC cash flow statements." />
         : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">Free cash flow</h2></header><p className="trend-panel-note">Free cash flow is operating cash flow minus capital expenditures; both figures must be reported for the same quarter.</p><p className="empty-trend-note">Free cash flow requires reported operating cash flow and capital expenditures for matching quarters.</p></section>}
       {epsRows.length > 0
-        ? <MetricTrendPanel title="EPS" rows={epsRows} color="#fafafa" valueFormatter={dollarsPerShare} note={epsRows.some(row => row.source === "derived from annual EPS") ? "Earnings per share (EPS) is net income per share." : "Earnings per share (EPS) is net income per share."} />
+        ? <MetricTrendPanel title="EPS" rows={epsRows} color="#fafafa" valueFormatter={value => dollarsPerShare(value, accountingCurrency)} currencyCode={accountingCurrency} note={epsRows.some(row => row.source === "derived from annual EPS") ? "Earnings per share (EPS) is net income per share." : "Earnings per share (EPS) is net income per share."} />
         : <section className="section trend-panel"><header className="trend-panel-header"><h2 className="trend-panel-title">EPS</h2></header><p className="trend-panel-note">Earnings per share (EPS) is net income per share.</p><p className="empty-trend-note">Quarterly EPS facts are not available for this ticker.</p></section>}
-      <BalanceSheetPanel rows={balanceSheetRows} />
-      <LiquidityDebtPanel rows={liquidityDebtRows} />
+      <BalanceSheetPanel rows={balanceSheetRows} currencyCode={accountingCurrency} />
+      <LiquidityDebtPanel rows={liquidityDebtRows} currencyCode={accountingCurrency} />
       <SharesOutstandingPanel rows={sharesOutstandingRows} concept={data.shares_outstanding_concept ?? ""} />
       <PETrendPanel rows={peHistory} market={data.market} />
 
@@ -928,7 +944,7 @@ export default function Dashboard() {
         const fiscalLabel = row.fiscal ?? quarterLabel(row.end);
         const secSearch = `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(`${form} ${row.end}`)}&ciks=${data.company.cik}&dateRange=all`;
         const slidesSearch = `https://www.google.com/search?q=${encodeURIComponent(`${data.company.ticker} ${fiscalLabel} earnings presentation slides`)}`;
-        return <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value)}</td><td>{pct(row.income?.yoy_pct)}</td><td className="quarter-actions-cell"><details name="quarter-documents" className="quarter-actions"><summary aria-label={`Open documents for ${fiscalLabel}`} title={`Open documents for ${fiscalLabel}`}>⋮</summary><div className="quarter-actions-menu">
+        return <tr key={row.end}><td>{row.fiscal ?? "—"}</td><td>{row.end}</td><td>{row.revenue?.filed ?? row.income?.filed ?? "—"}</td><td>{money(row.revenue?.value, accountingCurrency)}</td><td>{pct(row.revenue?.yoy_pct)}</td><td>{money(row.income?.value, accountingCurrency)}</td><td>{pct(row.income?.yoy_pct)}</td><td className="quarter-actions-cell"><details name="quarter-documents" className="quarter-actions"><summary aria-label={`Open documents for ${fiscalLabel}`} title={`Open documents for ${fiscalLabel}`}>⋮</summary><div className="quarter-actions-menu">
           {filing
             ? <button type="button" disabled={openingFiling} onClick={() => void openFilingPdf(filing.url)}>{openingFiling ? "Opening PDF…" : `Open ${filing.form} PDF`}</button>
             : <a href={secSearch} target="_blank" rel="noreferrer">Search SEC {form} filings</a>}
@@ -936,7 +952,7 @@ export default function Dashboard() {
           {filingMessage && <span className="quarter-actions-message" role="status">{filingMessage}</span>}
         </div></details></td></tr>;
       })}</tbody></table></div></section>
-      <div className="status">SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • balance sheet <strong>{data.balance_sheet_concept ?? "unavailable"}</strong> • shares outstanding <strong>{data.shares_outstanding_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
+      <div className="status">Accounting currency <strong>{accountingCurrency}</strong> • SEC concepts: revenue <strong>{data.revenue_concept}</strong> • net income <strong>{data.income_concept}</strong> • free cash flow <strong>{data.free_cash_flow_concept ?? "unavailable"}</strong> • balance sheet <strong>{data.balance_sheet_concept ?? "unavailable"}</strong> • shares outstanding <strong>{data.shares_outstanding_concept ?? "unavailable"}</strong> • EPS <strong>{data.eps_concept ?? "unavailable"}</strong> • CIK {data.company.cik}. {data.cache.sec}.</div>
       </div>
       <div id="earnings-panel" role="tabpanel" aria-labelledby="earnings-tab" hidden={activeTab !== "earnings"}>
         <EarningsCallPanel key={data.company.ticker} ticker={data.company.ticker} quarters={earningsQuarters} />

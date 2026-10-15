@@ -11,7 +11,8 @@ Your computer
 ├── Python / FastAPI (localhost:8000)
 │   ├── SEC ticker + Company Facts ingestion
 │   ├── XBRL quarterly normalization / YoY calculations
-│   ├── Yahoo Finance quote and optional Alpha Vantage analyst EPS estimates
+│   ├── Yahoo Finance quote and Forward P/E data
+│   ├── On-demand Alpha Vantage earnings call transcripts
 │   └── SQLite persistence
 └── data/
     └── financial_dashboard.sqlite3
@@ -95,7 +96,11 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - SEC ticker list: refreshed after 7 days.
 - Company Facts: refreshed after 24 hours.
 - Market snapshot: refreshed after 15 minutes.
-- When `ALPHAVANTAGE_API_KEY` is configured, forward P/E uses Alpha Vantage quarterly consensus EPS for the next four fiscal quarters and calculates price / EPS. The estimate is cached for 24 hours to stay within the provider's free request allowance. Without a key or if Alpha Vantage has no estimate data for a ticker, the app uses Yahoo Finance estimates. Forward P/E is shown as N/M when the estimate is non-positive.
+- Forward P/E uses Yahoo Finance forward EPS or its reported forward P/E. Alpha Vantage is used only for earnings call transcripts.
+- Earnings call transcripts are requested only after the user selects a fiscal quarter and presses **Fetch transcript**; they are not fetched during dashboard loading.
+- The Earnings Call tab checks SQLite for the selected quarter's transcript on load and displays it automatically when cached. This cache-only check does not contact Alpha Vantage or Google AI Studio.
+- Successful transcripts are cached in local SQLite by ticker and fiscal quarter until the local cache is cleared. Google AI Studio summaries are keyed by ticker, quarter, and model, and expire after 24 hours; an expired summary is regenerated on the next fetch.
+- Transcript summaries are generated only as part of an explicit **Fetch transcript** request. Set `GEMINI_API_KEY` in `backend/.env` to enable summaries; `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`. Google AI Studio's free-tier access and limits depend on the selected model and account/project.
 - All raw SEC Company Facts are stored in SQLite so the dashboard can be rebuilt without another SEC request while the cache is fresh.
 - `data/financial_dashboard.sqlite3` is intentionally ignored by git.
 
@@ -107,7 +112,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `quarterly_metrics`: normalized quarterly revenue/net income facts.
 - `market_snapshots`: latest price/forward P/E snapshot.
 
-To enable analyst consensus estimates, claim an Alpha Vantage API key from [Alpha Vantage](https://www.alphavantage.co/support/#api-key) and add it as `ALPHAVANTAGE_API_KEY` in `backend/.env`. Alpha Vantage lists the earnings-estimates endpoint among its fundamental data APIs, and its free service allows 25 requests per day across most datasets. If the endpoint is unavailable or has no estimates for a ticker, the dashboard falls back to Yahoo Finance and labels the source accordingly.
+To enable earnings call transcripts, claim an Alpha Vantage API key from [Alpha Vantage](https://www.alphavantage.co/support/#api-key) and add it as `ALPHAVANTAGE_API_KEY` in `backend/.env`. To enable summaries, create a Google AI Studio API key and add it as `GEMINI_API_KEY` (optionally set `GEMINI_MODEL`) in the same file. The Earnings Call tab sends provider requests for the selected ticker and fiscal quarter only when **Fetch transcript** is pressed. If summary generation fails, the transcript is still displayed.
 
 ## Notes
 

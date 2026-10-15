@@ -5,7 +5,10 @@ from fastapi import Body, FastAPI, HTTPException, Query
 
 from . import db
 from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, margin_metric, quarter_metric, shares_outstanding_metric
-from .market import cached_earnings_call_transcript, earnings_call_transcript, earnings_event, historical_pe, snapshot
+from .market import (
+    cached_earnings_call_transcript, convert_quarterly_flows_to_usd,
+    earnings_call_transcript, earnings_event, historical_pe, snapshot,
+)
 from .gemini import cached_earnings_summary, summarize_earnings_call
 from .sec import SecError, get_company, get_company_facts, open_sec_filing_pdf, quarterly_filing_links
 from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
@@ -99,7 +102,9 @@ def build_metric(facts, cik, years, kind):
                 "start": row["start"], "end": row["end"], "value": float(row["val"]),
                 "filed": row.get("filed"), "fy": row.get("fy"), "fp": row.get("fp"),
                 "days": 92, "source": "6-K earnings release", "concept": concept,
+                "currency": row.get("currency", "USD"),
             })
+        convert_quarterly_flows_to_usd(quarters)
         add_growth_metrics(quarters)
         for row in quarters:
             fy, fp = row.get("fy"), row.get("fp")
@@ -174,6 +179,10 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
     return {
         "company": company,
         "market": market,
+        "accounting_currency": next(
+            (row.get("currency", "USD") for row in revenue if row.get("currency")),
+            "USD",
+        ),
         "revenue_concept": revenue_concept,
         "income_concept": income_concept,
         "eps_concept": eps_concept,

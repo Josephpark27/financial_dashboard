@@ -17,6 +17,8 @@ MARKET_SNAPSHOT_TTL = timedelta(minutes=15)
 EARNINGS_DATE_CACHE_TTL = timedelta(hours=24)
 HISTORICAL_CLOSE_CACHE_TTL = timedelta(hours=24)
 EMPTY_HISTORICAL_CLOSE_CACHE_TTL = timedelta(minutes=15)
+FX_HISTORY_CACHE_TTL = timedelta(hours=24)
+EMPTY_FX_HISTORY_CACHE_TTL = timedelta(minutes=15)
 _YFINANCE_CACHE_LOCK = Lock()
 _YFINANCE_CACHE_CONFIGURED = False
 
@@ -85,6 +87,107 @@ def _historical_closes(ticker, first_period_end):
     prices.sort(key=lambda item: item["date"])
     db.set_meta(cache_key, json.dumps({"cached_at": now_iso(), "prices": prices}))
     return prices
+
+
+def _historical_fx_rates(currency, start_date, end_date):
+    """Load and cache daily Yahoo FX closes for converting reported flows."""
+    currency = str(currency or "").upper()
+    if not re.fullmatch(r"[A-Z]{3}", currency) or currency == "USD":
+        raise ValueError(f"Cannot convert {currency or 'unknown currency'} financials to USD.")
+
+    start = date.fromisoformat(start_date) if isinstance(start_date, str) else start_date
+    end = date.fromisoformat(end_date) if isinstance(end_date, str) else end_date
+    if start > end:
+        raise ValueError("Invalid exchange-rate period.")
+
+    cache_key = f"fx_history:yahoo:v1:{currency}USD"
+    cached_text = db.get_meta(cache_key)
+    if cached_text:
+        try:
+            cached = json.loads(cached_text)
+            cached_at = datetime.fromisoformat(cached["cached_at"].replace("Z", "+00:00"))
+            rates = cached.get("rates", [])
+            ttl = FX_HISTORY_CACHE_TTL if rates else EMPTY_FX_HISTORY_CACHE_TTL
+            covers_period = (
+                not rates or (
+                    date.fromisoformat(rates[0]["date"]) <= start + timedelta(days=7)
+                    and date.fromisoformat(rates[-1]["date"]) >= end - timedelta(days=7)
+                )
+            )
+            if datetime.now(timezone.utc) - cached_at < ttl and covers_period:
+                return rates
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+    rates = []
+    try:
+        yf = _yfinance_client()
+        history = yf.Ticker(f"{currency}USD=X").history(
+            start=start.isoformat(),
+            end=(end + timedelta(days=1)).isoformat(),
+            interval="1d", auto_adjust=False, actions=False, timeout=10,
+        )
+        if history is not None and not history.empty and "Close" in history:
+            for stamp, raw_rate in history["Close"].dropna().items():
+                rate = _number(raw_rate)
+                if rate is not None and rate > 0:
+                    rates.append({"date": stamp.date().isoformat(), "rate": rate})
+    except Exception:
+        # If the provider is unavailable, do not silently label EUR values USD.
+        rates = []
+
+    rates.sort(key=lambda item: item["date"])
+    db.set_meta(cache_key, json.dumps({"cached_at": now_iso(), "rates": rates}))
+    return rates
+
+
+def convert_quarterly_flows_to_usd(rows):
+    """Convert fallback quarterly flow values with each period's average FX rate."""
+    currencies = {str(row.get("currency", "USD")).upper() for row in rows}
+    foreign_currencies = currencies - {"USD"}
+    if not foreign_currencies:
+        return rows
+    if len(foreign_currencies) != 1:
+        raise ValueError("Cannot convert quarterly financials reported in mixed currencies.")
+
+    currency = foreign_currencies.pop()
+    periods = []
+    previous_end = None
+    for row in rows:
+        end = date.fromisoformat(row["end"])
+        reported_start = date.fromisoformat(row["start"])
+        start = reported_start
+        if previous_end is not None:
+            fiscal_start = previous_end + timedelta(days=1)
+            if 70 <= (end - previous_end).days <= 120:
+                start = fiscal_start
+        periods.append((row, start, end))
+        previous_end = end
+
+    rates = _historical_fx_rates(
+        currency,
+        min(start for _, start, _ in periods),
+        max(end for _, _, end in periods),
+    )
+    if not rates:
+        raise ValueError(f"Could not load historical {currency}/USD exchange rates.")
+
+    for row, start, end in periods:
+        period_rates = [
+            item["rate"] for item in rates
+            if start.isoformat() <= item["date"] <= end.isoformat()
+        ]
+        if not period_rates:
+            raise ValueError(
+                f"Could not find historical {currency}/USD exchange rates for the quarter ending {end.isoformat()}."
+            )
+        average_rate = sum(period_rates) / len(period_rates)
+        row["value"] *= average_rate
+        row["currency"] = "USD"
+        row["fx_rate"] = average_rate
+        row["fx_currency"] = currency
+        row["fx_method"] = "quarterly average"
+    return rows
 
 
 def historical_pe(ticker, eps_rows):

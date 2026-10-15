@@ -11,7 +11,7 @@ from .config import SEC_USER_AGENT
 HEADERS = {"User-Agent": SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/"
-FALLBACK_PARSER_VERSION = 3
+FALLBACK_PARSER_VERSION = 4
 FALLBACK_CACHE_TTL = timedelta(hours=24)
 MONTHS = {name: idx for idx, name in enumerate(
     ["January", "February", "March", "April", "May", "June", "July",
@@ -21,6 +21,7 @@ _QUARTER_HDR = re.compile(
     r"(three)\s+months\s+ended\s+"
     r"(January|February|March|April|May|June|July|August|September|October|November|December)"
     r"\s*(\d{1,2}),?", re.I)
+_QUARTER_LABEL_HDR = re.compile(r"\bQ([1-4])\s+(20\d{2})\b", re.I)
 
 
 def _text(value):
@@ -67,16 +68,29 @@ def _quarter_columns(table):
     if table.shape[0] < 3:
         return []
     header_text = " ".join(_label(v) for row in table.iloc[:2].values.tolist() for v in row)
-    if not _QUARTER_HDR.search(header_text):
+    quarter_labels = _quarter_label_columns(table)
+    if not _QUARTER_HDR.search(header_text) and not quarter_labels:
         return []
+    if quarter_labels:
+        return [(column, year) for column, year, _ in quarter_labels]
     year_cells = []
     for idx, value in enumerate(table.iloc[1].tolist()):
         text = _text(value)
         if re.fullmatch(r"20\d\d", text) and (not year_cells or year_cells[-1][1] != int(text)):
             year_cells.append((idx, int(text)))
-    if len(year_cells) < 2:
-        return []
-    return year_cells[:2]
+    if len(year_cells) >= 2:
+        return year_cells[:2]
+    return []
+
+
+def _quarter_label_columns(table):
+    columns = []
+    for column in range(table.shape[1]):
+        header = " ".join(_text(value) for value in table.iloc[:3, column].tolist())
+        match = _QUARTER_LABEL_HDR.search(header)
+        if match:
+            columns.append((column, int(match.group(2)), f"Q{match.group(1)}"))
+    return columns
 
 
 def _extract_metric(table, pattern, year_cols):
@@ -99,14 +113,22 @@ def _extract_metric(table, pattern, year_cols):
 def _exhibits_from_filing(cik, accession):
     url = ARCHIVES_URL.format(cik=cik, accession=accession)
     index = requests.get(f"{url}index.json", headers=HEADERS, timeout=30).json()
-    return [
+    documents = [
         f"{url}{item['name']}"
         for item in index["directory"]["item"]
-        if re.search(r"ex99(?:-?1|d1).*\.htm$", item["name"], re.I)
+        if re.search(r"\.html?$", item["name"], re.I)
     ]
+    likely = [
+        document for document in documents
+        if re.search(
+            r"ex99|press.?release|financial.?results?|quarterly.?results?",
+            document.rsplit("/", 1)[-1], re.I,
+        )
+    ]
+    return likely or documents
 
 
-def _facts_from_exhibit(url):
+def _facts_from_exhibit(url, report_date=None):
     try:
         response = requests.get(url, headers=HEADERS, timeout=30)
         tables = pd.read_html(StringIO(response.text))
@@ -118,13 +140,20 @@ def _facts_from_exhibit(url):
             continue
         header_text = " ".join(_label(v) for row in table.iloc[:2].values.tolist() for v in row)
         quarter_match = _QUARTER_HDR.search(header_text)
-        if not quarter_match:
+        quarter_labels = _quarter_label_columns(table)
+        if not quarter_match and not quarter_labels:
             continue
         columns = _quarter_columns(table)
         if len(columns) < 2:
             continue
-        latest_col, latest_year = columns[-1]
-        revenue = list(_extract_metric(table, r"^Revenues?$", [columns[-1]]))
+        revenue = []
+        for pattern in (
+            r"^Total\s+net\s+sales$", r"^Total\s+revenues?$",
+            r"^Net\s+sales$", r"^Revenues?$",
+        ):
+            revenue = list(_extract_metric(table, pattern, [columns[-1]]))
+            if revenue:
+                break
         income = list(_extract_metric(
             table,
             r"^Net\s+(?:income\s*/\s*\(loss\)|\(loss\)\s*/\s*income|income|loss)"
@@ -133,12 +162,33 @@ def _facts_from_exhibit(url):
         ))
         if not revenue:
             continue
-        _, month_name, day = quarter_match.groups()
+        if quarter_match:
+            _, month_name, day = quarter_match.groups()
+            end = date(columns[-1][1], MONTHS[month_name.capitalize()], int(day))
+        elif report_date:
+            try:
+                end = datetime.fromisoformat(report_date[:10]).date()
+            except (TypeError, ValueError):
+                end = None
+        else:
+            end = None
+        if end is None and quarter_labels:
+            _, year, fiscal_quarter = quarter_labels[-1]
+            month = int(fiscal_quarter[1:]) * 3
+            end = date(year, month, 1) + timedelta(days=31)
+            end = date(end.year, end.month, 1) - timedelta(days=1)
+        if end is None:
+            continue
+        currency = (
+            "EUR" if re.search(r"€|\beuros?\b|\bEUR\b", response.text, re.I)
+            else "USD"
+        )
         result = {
-            "end": date(latest_year, MONTHS[month_name.capitalize()], int(day)),
+            "end": end,
             "revenue": revenue,
             "income": income,
             "url": url,
+            "currency": currency,
         }
         if income:
             return result
@@ -167,6 +217,7 @@ def six_k_fallback(cik, kind):
             "start": point["start"], "end": point["period_end"],
             "val": value * 1_000_000, "fy": end.year,
             "fp": f"Q{(end.month - 1) // 3 + 1}", "filed": point.get("filed"),
+            "currency": point.get("currency", "USD"),
         })
     if not facts_rows:
         raise ValueError(f"Could not identify quarterly {kind} facts in the SEC data.")
@@ -181,8 +232,10 @@ def refresh_six_k_fallback(cik, years_back):
     history_limit = years_back * 4 + 4
     points = {}
     scanned = 0
+    report_dates = recent.get("reportDate", [])
     for idx, form in enumerate(recent["form"]):
         filed = recent["filingDate"][idx]
+        report_date = report_dates[idx] if idx < len(report_dates) else ""
         try:
             filed_date = datetime.fromisoformat(filed).date()
         except Exception:
@@ -198,7 +251,7 @@ def refresh_six_k_fallback(cik, years_back):
         except Exception:
             continue
         for url in exhibits:
-            result = _facts_from_exhibit(url)
+            result = _facts_from_exhibit(url, report_date)
             if not result or result["end"] < cutoff or result["end"] in points:
                 continue
             points[result["end"]] = {
@@ -206,6 +259,7 @@ def refresh_six_k_fallback(cik, years_back):
                 "start": _period_start(result["end"]).isoformat(),
                 "revenue": next((v for _, v in result["revenue"]), None),
                 "net_income": next((v for _, v in result["income"]), None),
+                "currency": result["currency"],
                 "filed": filed, "url": url,
             }
             break
