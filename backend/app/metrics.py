@@ -546,11 +546,27 @@ def _instant_metric_series(facts, preferred, cutoff, unit="USD", merge_concepts=
     return concept_label, by_end
 
 
-def balance_sheet_metric(facts, years_back):
+def balance_sheet_metric(facts, years_back, supplemental=()):
     """Build quarterly assets/liabilities and derive equity as assets less liabilities."""
     cutoff = date.today() - timedelta(days=365 * years_back)
     assets_concept, assets_by_end = _instant_metric_series(facts, ["Assets"], cutoff)
     liabilities_concept, liabilities_by_end = _instant_metric_series(facts, ["Liabilities"], cutoff)
+
+    for row in supplemental:
+        try:
+            end = parse_date(row["period_end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end < cutoff:
+            continue
+        fact = {
+            "end": end, "filed": row.get("filed"),
+            "fy": end.year, "fp": f"Q{(end.month - 1) // 3 + 1}",
+        }
+        if row.get("assets") is not None:
+            assets_by_end.setdefault(end, {**fact, "value": row["assets"]})
+        if row.get("liabilities") is not None:
+            liabilities_by_end.setdefault(end, {**fact, "value": row["liabilities"]})
     if not assets_by_end or not liabilities_by_end:
         raise ValueError("Could not identify quarterly assets and liabilities in the SEC data.")
 
@@ -589,7 +605,7 @@ def balance_sheet_metric(facts, years_back):
     return concept, periods
 
 
-def liquidity_debt_metric(facts, years_back):
+def liquidity_debt_metric(facts, years_back, supplemental=()):
     """Build quarterly cash, marketable securities, and total reported debt."""
     cutoff = date.today() - timedelta(days=365 * years_back)
     calculation_cutoff = cutoff - timedelta(days=365)
@@ -626,11 +642,22 @@ def liquidity_debt_metric(facts, years_back):
     ], calculation_cutoff)
 
     if not cash and not (current_securities or noncurrent_securities or total_securities) \
-            and not (current_debt or short_debt or noncurrent_debt):
+            and not (current_debt or short_debt or noncurrent_debt) and not supplemental:
         raise ValueError("Could not identify quarterly cash, marketable securities, or debt in SEC facts.")
+
+    supplemental_by_end = {}
+    for row in supplemental:
+        try:
+            end = parse_date(row["period_end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end < calculation_cutoff:
+            continue
+        supplemental_by_end[end] = row
 
     period_ends = set(cash) | set(current_securities) | set(noncurrent_securities) | set(total_securities)
     period_ends |= set(current_debt) | set(short_debt) | set(noncurrent_debt)
+    period_ends |= set(supplemental_by_end)
     periods = []
     for end in sorted(period_ends):
         if end < calculation_cutoff:
@@ -644,7 +671,10 @@ def liquidity_debt_metric(facts, years_back):
             series[end] for series in (current_debt, short_debt, noncurrent_debt)
             if end in series
         ]
+        supplemental_fact = supplemental_by_end.get(end, {})
         associated_facts = ([cash_fact] if cash_fact else []) + security_facts + debt_facts
+        if supplemental_fact:
+            associated_facts.append(supplemental_fact)
         filing_dates = [fact.get("filed") for fact in associated_facts if fact.get("filed")]
         metadata = next((fact for fact in associated_facts if fact.get("fp") or fact.get("fy")), {})
         fiscal_period = metadata.get("fp")
@@ -659,9 +689,15 @@ def liquidity_debt_metric(facts, years_back):
             "period_end": end.isoformat(),
             "fiscal_period": f"{int(fiscal_year)} {fiscal_period}",
             "filed": min(filing_dates) if filing_dates else None,
-            "cash": cash_fact["value"] if cash_fact else None,
-            "marketable_securities": sum(fact["value"] for fact in security_facts) if security_facts else None,
-            "debt": sum(fact["value"] for fact in debt_facts) if debt_facts else None,
+            "cash": cash_fact["value"] if cash_fact else supplemental_fact.get("cash"),
+            "marketable_securities": (
+                sum(fact["value"] for fact in security_facts) if security_facts
+                else supplemental_fact.get("marketable_securities")
+            ),
+            "debt": (
+                sum(fact["value"] for fact in debt_facts) if debt_facts
+                else supplemental_fact.get("debt")
+            ),
         })
 
     for field in ("cash", "marketable_securities", "debt"):

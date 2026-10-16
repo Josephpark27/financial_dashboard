@@ -11,7 +11,10 @@ from .market import (
 )
 from .gemini import cached_earnings_summary, summarize_earnings_call
 from .sec import SecError, get_company, get_company_facts, open_sec_filing_pdf, quarterly_filing_links
-from .fallback import fallback_needs_refresh, refresh_six_k_fallback, six_k_fallback
+from .fallback import (
+    fallback_needs_refresh, refresh_six_k_fallback, six_k_balance_sheet_fallback,
+    six_k_fallback,
+)
 
 
 @asynccontextmanager
@@ -127,6 +130,14 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         facts = get_company_facts(company["cik"])
         revenue_concept, revenue = build_metric(facts, company["cik"], years, "revenue")
         income_concept, net_income = build_metric(facts, company["cik"], years, "net income")
+        if ticker == "NBIS" and fallback_needs_refresh(company["cik"]):
+            try:
+                refresh_six_k_fallback(company["cik"], years)
+            except Exception:
+                # Keep the SEC company-facts balance sheet available if the
+                # optional 6-K supplement cannot be refreshed.
+                pass
+        quarterly_balance_sheet = six_k_balance_sheet_fallback(company["cik"])
         _, margin_revenue = build_metric(facts, company["cik"], years + 1, "revenue")
         _, margin_income = build_metric(facts, company["cik"], years + 1, "net income")
         try:
@@ -145,11 +156,15 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         except ValueError:
             free_cash_flow_concept, free_cash_flow = "Free cash flow unavailable in SEC facts", []
         try:
-            balance_sheet_concept, balance_sheet = balance_sheet_metric(facts, years)
+            balance_sheet_concept, balance_sheet = balance_sheet_metric(
+                facts, years, quarterly_balance_sheet,
+            )
         except ValueError:
             balance_sheet_concept, balance_sheet = "Balance sheet unavailable in SEC facts", []
         try:
-            liquidity_debt_concept, liquidity_debt = liquidity_debt_metric(facts, years)
+            liquidity_debt_concept, liquidity_debt = liquidity_debt_metric(
+                facts, years, quarterly_balance_sheet,
+            )
         except ValueError:
             liquidity_debt_concept, liquidity_debt = "Cash, marketable securities, and debt unavailable in SEC facts", []
         try:
