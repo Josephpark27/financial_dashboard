@@ -596,7 +596,7 @@ function SharesOutstandingPanel({ rows, concept }: { rows: SharesOutstandingPoin
 }
 
 function PETrendPanel({ rows, market }: { rows: PEPoint[]; market: DashboardData["market"] }) {
-  const [mode, setMode] = useState<"forward" | "trailing">("forward");
+  const [mode, setMode] = useState<"forward" | "trailing">("trailing");
   const forwardPe = market.forward_pe_status === "available" ? market.forward_pe : null;
   const chartData = useMemo(() => mode === "forward"
     ? (forwardPe == null ? [] : [{ label: "Current", pe: forwardPe }])
