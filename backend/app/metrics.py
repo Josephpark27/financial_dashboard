@@ -549,10 +549,41 @@ def _instant_metric_series(facts, preferred, cutoff, unit="USD", merge_concepts=
 
 
 def balance_sheet_metric(facts, years_back, supplemental=()):
-    """Build quarterly assets/liabilities and derive equity as assets less liabilities."""
+    """Build quarterly assets/liabilities, deriving missing totals from the balance sheet."""
     cutoff = date.today() - timedelta(days=365 * years_back)
     assets_concept, assets_by_end = _instant_metric_series(facts, ["Assets"], cutoff)
     liabilities_concept, liabilities_by_end = _instant_metric_series(facts, ["Liabilities"], cutoff)
+    equity_concept, equity_by_end = _instant_metric_series(facts, [
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+        "StockholdersEquity",
+    ], cutoff)
+    liabilities_and_equity_concept, liabilities_and_equity_by_end = _instant_metric_series(
+        facts, ["LiabilitiesAndStockholdersEquity"], cutoff,
+    )
+
+    # Some filers omit the generic Liabilities tag but report the balance-sheet
+    # total and equity. The accounting equation provides total liabilities.
+    if assets_concept is None and liabilities_and_equity_concept:
+        assets_concept = liabilities_and_equity_concept
+    for end, total in liabilities_and_equity_by_end.items():
+        assets_by_end.setdefault(end, total)
+    for end in assets_by_end.keys() & equity_by_end.keys():
+        total = liabilities_and_equity_by_end.get(end) or assets_by_end[end]
+        equity = equity_by_end[end]
+        filing_dates = [
+            row.get("filed") for row in (total, equity, assets_by_end[end])
+            if row.get("filed")
+        ]
+        liabilities_by_end.setdefault(end, {
+            "end": end,
+            "value": total["value"] - equity["value"],
+            "filed": min(filing_dates) if filing_dates else None,
+            "fy": total.get("fy") if total.get("fy") is not None else equity.get("fy"),
+            "fp": total.get("fp") or equity.get("fp"),
+            "concept": f"{liabilities_and_equity_concept or assets_concept} - {equity_concept}",
+        })
+    if liabilities_concept is None and liabilities_by_end:
+        liabilities_concept = f"derived from {liabilities_and_equity_concept or assets_concept} - {equity_concept}"
 
     for row in supplemental:
         try:
