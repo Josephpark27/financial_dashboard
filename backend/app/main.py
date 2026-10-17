@@ -152,6 +152,18 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         except ValueError:
             eps_concept, eps = "EPS not reported in SEC facts", []
         try:
+            operating_income_concept, operating_income = quarter_metric(
+                facts, years, "operating income",
+            )
+        except ValueError:
+            operating_income_concept, operating_income = "Operating income unavailable in SEC facts", []
+        try:
+            operating_cash_flow_concept, operating_cash_flow = quarter_metric(
+                facts, years, "operating cash flow",
+            )
+        except ValueError:
+            operating_cash_flow_concept, operating_cash_flow = "Operating cash flow unavailable in SEC facts", []
+        try:
             free_cash_flow_concept, free_cash_flow = free_cash_flow_metric(facts, years)
         except ValueError:
             free_cash_flow_concept, free_cash_flow = "Free cash flow unavailable in SEC facts", []
@@ -201,6 +213,8 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         "revenue_concept": revenue_concept,
         "income_concept": income_concept,
         "eps_concept": eps_concept,
+        "operating_income_concept": operating_income_concept,
+        "operating_cash_flow_concept": operating_cash_flow_concept,
         "free_cash_flow_concept": free_cash_flow_concept,
         "balance_sheet_concept": balance_sheet_concept,
         "liquidity_debt_concept": liquidity_debt_concept,
@@ -209,6 +223,8 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         "net_income": net_income,
         "margins": margins,
         "eps": eps,
+        "operating_income": operating_income,
+        "operating_cash_flow": operating_cash_flow,
         "free_cash_flow": free_cash_flow,
         "balance_sheet": balance_sheet,
         "liquidity_debt": liquidity_debt,

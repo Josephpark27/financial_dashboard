@@ -15,6 +15,8 @@ def candidates(facts, kind):
         ]
     elif kind == "gross profit":
         preferred = ["GrossProfit"]
+    elif kind == "operating income":
+        preferred = ["OperatingIncomeLoss", "OperatingIncomeLossFromContinuingOperations"]
     elif kind == "eps":
         preferred = [
             "EarningsPerShareDiluted", "EarningsPerShareBasic",
