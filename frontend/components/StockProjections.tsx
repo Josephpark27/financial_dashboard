@@ -296,6 +296,7 @@ export default function StockProjections({ data }: { data: DashboardData }) {
   const currentMargin = model.startingRevenue > 0 ? model.startingNetIncome / model.startingRevenue * 100 : null;
   const latestRevenueGrowth = data.revenue.at(-1)?.ttm_yoy_pct ?? data.revenue.at(-1)?.yoy_pct ?? null;
   const latestNetIncomeGrowth = data.net_income.at(-1)?.ttm_yoy_pct ?? data.net_income.at(-1)?.yoy_pct ?? null;
+  const latestShareCountGrowth = data.shares_outstanding?.at(-1)?.yoy_pct ?? null;
   const historicalMargins = (data.margins ?? []).map(row => row.net_margin_ttm ?? row.net_margin)
     .filter((margin): margin is number => margin != null && Number.isFinite(margin));
   const historicalMarginHigh = historicalMargins.length ? Math.max(...historicalMargins) : null;
@@ -316,26 +317,26 @@ export default function StockProjections({ data }: { data: DashboardData }) {
 
     <div className="projection-baseline-grid">
       <div className="projection-baseline-card">
-        <span>Current annual revenue</span>
+        <span>Latest annual revenue</span>
         <strong>{formatMoney(model.startingRevenue, currency)}</strong>
         <small>{revenueBaseline.note}</small>
         <small>Latest YoY: {formatPercent(latestRevenueGrowth)}</small>
       </div>
       <div className="projection-baseline-card">
-        <span>Current annual net income</span>
+        <span>Latest net margin</span>
+        <strong>{formatPercent(currentMargin)}</strong>
+        <small>Net income ÷ revenue</small>
+      </div>
+      <div className="projection-baseline-card">
+        <span>Latest annual net income</span>
         <strong>{formatMoney(model.startingNetIncome, currency)}</strong>
         <small>{incomeBaseline.note} · editable below</small>
         <small>Latest YoY: {formatPercent(latestNetIncomeGrowth)}</small>
       </div>
       <div className="projection-baseline-card">
-        <span>Current net margin</span>
-        <strong>{formatPercent(currentMargin)}</strong>
-        <small>Net income ÷ revenue</small>
-      </div>
-      <div className="projection-baseline-card">
-        <span>Current share price</span>
-        <strong>{formatMoney(model.currentPrice, "USD", false)}</strong>
-        <small>Market snapshot · editable below</small>
+        <span>Latest share count change</span>
+        <strong>{formatPercent(latestShareCountGrowth)} / yr</strong>
+        <small>Latest SEC year-over-year change</small>
       </div>
     </div>
 
