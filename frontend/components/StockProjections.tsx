@@ -6,7 +6,7 @@ import type { DashboardData, Metric } from "./Dashboard";
 type CaseKey = "bear" | "base" | "bull";
 type CaseInputs = {
   revenueGrowth: number;
-  netIncomeGrowth: number;
+  netMargin: number;
   exitPe: number;
   shareGrowth: number;
   outcomeWeight: number;
@@ -17,13 +17,13 @@ type ProjectionModel = {
   startingRevenue: number;
   startingNetIncome: number;
   startingShares: number;
-  hurdleRate: number;
   cases: Record<CaseKey, CaseInputs>;
 };
 type CaseResult = {
   revenue: number;
   netIncome: number;
   impliedMargin: number | null;
+  netIncomeGrowth: number | null;
   shares: number;
   eps: number | null;
   targetPrice: number | null;
@@ -63,7 +63,8 @@ function defaultModel(data: DashboardData): ProjectionModel {
   const latestRevenue = data.revenue.at(-1);
   const historicalRevenueGrowth = latestRevenue?.ttm_yoy_pct ?? latestRevenue?.yoy_pct ?? 5;
   const revenueGrowth = rounded(clamp(historicalRevenueGrowth, -90, 100));
-  const flatMarginIncomeGrowth = revenueGrowth;
+  const startingMargin = revenue.value > 0 ? income.value / revenue.value * 100 : 0;
+  const netMargin = rounded(clamp(startingMargin, -100, 100));
   const market = data.market;
   const marketPe = market.forward_pe != null && market.forward_pe > 0
     ? market.forward_pe
@@ -74,9 +75,9 @@ function defaultModel(data: DashboardData): ProjectionModel {
   const shareCount = latestShares?.value && latestShares.value > 0 ? latestShares.value : marketCapShares;
   const shareGrowth = rounded(clamp(latestShares?.yoy_pct ?? 0, -50, 100));
 
-  const makeCase = (caseRevenueGrowth: number, caseNetIncomeGrowth: number, pe: number, outcomeWeight: number): CaseInputs => ({
+  const makeCase = (caseRevenueGrowth: number, caseNetMargin: number, pe: number, outcomeWeight: number): CaseInputs => ({
     revenueGrowth: rounded(clamp(caseRevenueGrowth, -99, 200)),
-    netIncomeGrowth: rounded(clamp(caseNetIncomeGrowth, -99, 200)),
+    netMargin: rounded(clamp(caseNetMargin, -100, 100)),
     exitPe: rounded(clamp(pe, 0, 200), 1),
     shareGrowth: rounded(clamp(shareGrowth, -99, 200)),
     outcomeWeight,
@@ -91,11 +92,10 @@ function defaultModel(data: DashboardData): ProjectionModel {
     startingRevenue: revenue.value,
     startingNetIncome: income.value,
     startingShares: shareCount,
-    hurdleRate: 20,
     cases: {
-      bear: makeCase(bearRevenueGrowth, bearRevenueGrowth - 10, marketPe, 20),
-      base: makeCase(revenueGrowth, flatMarginIncomeGrowth, marketPe * 0.9, 60),
-      bull: makeCase(bullRevenueGrowth, bullRevenueGrowth + 5, marketPe * 1.25, 20),
+      bear: makeCase(bearRevenueGrowth, netMargin - 5, marketPe, 20),
+      base: makeCase(revenueGrowth, netMargin, marketPe * 0.9, 60),
+      bull: makeCase(bullRevenueGrowth, netMargin + 5, marketPe * 1.25, 20),
     },
   };
 }
@@ -105,18 +105,18 @@ function safeNumber(value: unknown, fallback: number, min: number, max: number) 
   return Number.isFinite(number) ? clamp(number, min, max) : fallback;
 }
 
-function legacyNetIncomeGrowth(netMargin: number | undefined, revenueGrowth: number, startingRevenue: number, startingNetIncome: number, horizon: number) {
-  if (netMargin == null || startingRevenue <= 0 || startingNetIncome <= 0) return null;
+function legacyNetMargin(netIncomeGrowth: number | undefined, revenueGrowth: number, startingRevenue: number, startingNetIncome: number, horizon: number) {
+  if (netIncomeGrowth == null || startingRevenue <= 0) return null;
   const projectedRevenue = startingRevenue * Math.pow(1 + revenueGrowth / 100, horizon);
-  const growthFactor = projectedRevenue * netMargin / 100 / startingNetIncome;
-  if (growthFactor <= 0) return null;
-  return (Math.pow(growthFactor, 1 / horizon) - 1) * 100;
+  if (projectedRevenue <= 0) return null;
+  const projectedNetIncome = startingNetIncome * Math.pow(1 + netIncomeGrowth / 100, horizon);
+  return projectedNetIncome / projectedRevenue * 100;
 }
 
 function restoreModel(value: unknown, defaults: ProjectionModel): ProjectionModel {
   if (!value || typeof value !== "object") return defaults;
   const saved = value as Partial<ProjectionModel>;
-  type SavedCaseInputs = Partial<CaseInputs> & { netMargin?: number };
+  type SavedCaseInputs = Partial<CaseInputs> & { netIncomeGrowth?: number };
   const savedCases = saved.cases as Partial<Record<CaseKey, SavedCaseInputs>> | undefined;
   const horizon = saved.horizon === 4 || saved.horizon === 5 ? saved.horizon : 3;
   const startingRevenue = safeNumber(saved.startingRevenue, defaults.startingRevenue, 0, 1e16);
@@ -126,10 +126,10 @@ function restoreModel(value: unknown, defaults: ProjectionModel): ProjectionMode
     const source = savedCases?.[key];
     const fallback = defaults.cases[key];
     const revenueGrowth = safeNumber(source?.revenueGrowth, fallback.revenueGrowth, -99, 200);
-    const inferredNetIncomeGrowth = legacyNetIncomeGrowth(source?.netMargin, revenueGrowth, startingRevenue, startingNetIncome, horizon);
+    const inferredNetMargin = legacyNetMargin(source?.netIncomeGrowth, revenueGrowth, startingRevenue, startingNetIncome, horizon);
     cases[key] = {
       revenueGrowth,
-      netIncomeGrowth: safeNumber(source?.netIncomeGrowth, inferredNetIncomeGrowth ?? fallback.netIncomeGrowth, -99, 200),
+      netMargin: safeNumber(source?.netMargin, inferredNetMargin ?? fallback.netMargin, -100, 100),
       exitPe: safeNumber(source?.exitPe, fallback.exitPe, 0, 200),
       shareGrowth: safeNumber(source?.shareGrowth, fallback.shareGrowth, -99, 200),
       outcomeWeight: safeNumber(source?.outcomeWeight, fallback.outcomeWeight, 0, 100),
@@ -141,7 +141,6 @@ function restoreModel(value: unknown, defaults: ProjectionModel): ProjectionMode
     startingRevenue,
     startingNetIncome,
     startingShares: safeNumber(saved.startingShares, defaults.startingShares, 0, 1e15),
-    hurdleRate: safeNumber(saved.hurdleRate, defaults.hurdleRate, 0, 100),
     cases,
   };
 }
@@ -172,8 +171,11 @@ function formatPercent(value: number | null, places = 1) {
 function projectCase(model: ProjectionModel, key: CaseKey): CaseResult {
   const assumptions = model.cases[key];
   const revenue = model.startingRevenue * Math.pow(1 + assumptions.revenueGrowth / 100, model.horizon);
-  const netIncome = model.startingNetIncome * Math.pow(1 + assumptions.netIncomeGrowth / 100, model.horizon);
+  const netIncome = revenue * assumptions.netMargin / 100;
   const impliedMargin = revenue > 0 ? netIncome / revenue * 100 : null;
+  const netIncomeGrowth = model.startingNetIncome > 0 && netIncome > 0
+    ? (Math.pow(netIncome / model.startingNetIncome, 1 / model.horizon) - 1) * 100
+    : null;
   const shares = model.startingShares * Math.pow(1 + assumptions.shareGrowth / 100, model.horizon);
   const eps = shares > 0 ? netIncome / shares : null;
   const targetPrice = eps != null && eps > 0 && assumptions.exitPe > 0 ? eps * assumptions.exitPe : null;
@@ -183,7 +185,7 @@ function projectCase(model: ProjectionModel, key: CaseKey): CaseResult {
   const cagr = targetPrice != null && model.currentPrice > 0
     ? (Math.pow(targetPrice / model.currentPrice, 1 / model.horizon) - 1) * 100
     : null;
-  return { revenue, netIncome, impliedMargin, shares, eps, targetPrice, upside, cagr };
+  return { revenue, netIncome, impliedMargin, netIncomeGrowth, shares, eps, targetPrice, upside, cagr };
 }
 
 function probabilityWeightedPrice(model: ProjectionModel, results: Record<CaseKey, CaseResult>) {
@@ -273,6 +275,7 @@ export default function StockProjections({ data }: { data: DashboardData }) {
     : null;
   const outcomeWeightTotal = CASES.reduce((total, { key }) => total + model.cases[key].outcomeWeight, 0);
   const returnRange = scenarioReturnRange(results);
+  const netIncomeGrowthUnavailable = model.startingNetIncome <= 0 || Object.values(results).some(result => result.netIncome <= 0);
   const currentYear = new Date().getFullYear();
   const targetYear = currentYear + model.horizon;
 
@@ -291,6 +294,8 @@ export default function StockProjections({ data }: { data: DashboardData }) {
   const revenueBaseline = annualBaseline(data.revenue);
   const incomeBaseline = annualBaseline(data.net_income);
   const currentMargin = model.startingRevenue > 0 ? model.startingNetIncome / model.startingRevenue * 100 : null;
+  const latestRevenueGrowth = data.revenue.at(-1)?.ttm_yoy_pct ?? data.revenue.at(-1)?.yoy_pct ?? null;
+  const latestNetIncomeGrowth = data.net_income.at(-1)?.ttm_yoy_pct ?? data.net_income.at(-1)?.yoy_pct ?? null;
   const historicalMargins = (data.margins ?? []).map(row => row.net_margin_ttm ?? row.net_margin)
     .filter((margin): margin is number => margin != null && Number.isFinite(margin));
   const historicalMarginHigh = historicalMargins.length ? Math.max(...historicalMargins) : null;
@@ -304,24 +309,26 @@ export default function StockProjections({ data }: { data: DashboardData }) {
     <header className="projection-header">
       <div>
         <h2 id="projection-title">Stock projections</h2>
-        <p>Project revenue and net income growth, then use implied margin as a backstop and an exit P/E to estimate value.</p>
+        <p>Project revenue and target-year net margin, then use implied net income growth as a check and an exit P/E to estimate value.</p>
       </div>
       <button type="button" className="projection-reset" onClick={reset}>Reset assumptions</button>
     </header>
 
     <div className="projection-baseline-grid">
       <div className="projection-baseline-card">
-        <span>Starting annual revenue</span>
+        <span>Current annual revenue</span>
         <strong>{formatMoney(model.startingRevenue, currency)}</strong>
         <small>{revenueBaseline.note}</small>
+        <small>Latest YoY: {formatPercent(latestRevenueGrowth)}</small>
       </div>
       <div className="projection-baseline-card">
-        <span>Starting annual net income</span>
+        <span>Current annual net income</span>
         <strong>{formatMoney(model.startingNetIncome, currency)}</strong>
         <small>{incomeBaseline.note} · editable below</small>
+        <small>Latest YoY: {formatPercent(latestNetIncomeGrowth)}</small>
       </div>
       <div className="projection-baseline-card">
-        <span>Starting net margin</span>
+        <span>Current net margin</span>
         <strong>{formatPercent(currentMargin)}</strong>
         <small>Net income ÷ revenue</small>
       </div>
@@ -354,19 +361,17 @@ export default function StockProjections({ data }: { data: DashboardData }) {
           min={0} max={1e15} step={1_000_000} onChange={value => setModel(current => ({ ...current, startingShares: clamp(value, 0, 1e15) }))} />
         <NumberField label="Share price today" value={model.currentPrice} suffix="USD"
           min={0} max={1_000_000} step={0.01} onChange={value => setModel(current => ({ ...current, currentPrice: clamp(value, 0, 1_000_000) }))} />
-        <NumberField label="Reference return hurdle" value={model.hurdleRate} suffix="% / yr"
-          min={0} max={100} step={1} onChange={value => setModel(current => ({ ...current, hurdleRate: clamp(value, 0, 100) }))} />
       </div>
-      <p className="projection-data-note">Share count: {shareSource}. The 20% return hurdle is the article’s reference benchmark and is editable. Starting values use reported TTM where available; otherwise they sum the latest four quarters or annualize the latest quarter.</p>
+      <p className="projection-data-note">Share count: {shareSource}. Starting values use reported TTM where available; otherwise they sum the latest four quarters or annualize the latest quarter.</p>
     </section>
 
     <section className="projection-scenario-section" aria-label="Scenario assumptions">
       <div className="projection-section-heading">
-        <div><h3>Scenario assumptions</h3><p>Set revenue growth, net income growth, exit P/E, and share dilution. Implied margin below is the backstop; compare it with the company’s history.</p></div>
+        <div><h3>Scenario assumptions</h3><p>Set revenue growth, target-year net margin, exit P/E, and share dilution. Net income growth is derived from revenue and margin.</p></div>
         <span className="projection-save-status" role="status">{ready ? "Saved by ticker in this browser" : "Loading saved assumptions…"}</span>
       </div>
-      <p className="projection-data-note">Base revenue growth starts from the recent SEC trend, and Base net income growth matches it to imply a flat margin. Bear and Bull stress those assumptions. Replace them with analyst estimates, company guidance, or your own driver math. Exit P/E starts from the current quote multiple; compare it with industry peers. Share count change starts from the latest year-over-year SEC change.</p>
-      {model.startingNetIncome <= 0 && <p className="projection-data-note">Starting net income is non-positive, so a percentage growth rate will not produce positive EPS. Enter a normalized positive starting value to use P/E valuation, or consider a different method.</p>}
+      <p className="projection-data-note">Revenue growth and Base margin default is from recent SEC trends; Bear and Bull vary them. Exit P/E default is from the current quote multiple; compare it with industry peers. Share count change default is from the latest year-over-year SEC change.</p>
+      {netIncomeGrowthUnavailable && <p className="projection-data-note">Derived net income growth is unavailable for scenarios with non-positive starting or projected net income. Use normalized starting earnings where appropriate.</p>}
       <div className="projection-case-grid">
         {CASES.map(({ key, title, subtitle }) => {
           const result = results[key];
@@ -376,13 +381,13 @@ export default function StockProjections({ data }: { data: DashboardData }) {
           <header><div><h4>{title}</h4><p>{subtitle}</p></div><span className="projection-case-dot" aria-hidden="true" /></header>
           <NumberField label="Revenue growth" value={model.cases[key].revenueGrowth} suffix="% / yr"
             min={-99} max={200} step={1} onChange={value => updateCase(key, "revenueGrowth", clamp(value, -99, 200))} />
-          <NumberField label="Net income growth" value={model.cases[key].netIncomeGrowth} suffix="% / yr"
-            min={-99} max={200} step={1} onChange={value => updateCase(key, "netIncomeGrowth", clamp(value, -99, 200))} />
+          <NumberField label={`Net margin in ${targetYear}`} value={model.cases[key].netMargin} suffix="%"
+            min={-100} max={100} step={1} onChange={value => updateCase(key, "netMargin", clamp(value, -100, 100))} />
           <div className={`projection-margin-backstop${marginAboveHistory ? " above-history" : ""}`}>
-            <span>Implied net margin in {targetYear}</span>
-            <strong>{formatPercent(result.impliedMargin)}</strong>
+            <span>Derived net income growth</span>
+            <strong>{formatPercent(result.netIncomeGrowth)}</strong>
             <small>Historical margin high: {formatPercent(historicalMarginHigh)}</small>
-            {marginAboveHistory && <em>Above reported history · pressure-test this assumption</em>}
+            {marginAboveHistory && <em>Note: Target margin is above reported history</em>}
           </div>
           <NumberField label="Exit P/E" value={model.cases[key].exitPe} suffix="×"
             min={0} max={200} step={0.5} onChange={value => updateCase(key, "exitPe", clamp(value, 0, 200))} />
@@ -426,11 +431,6 @@ export default function StockProjections({ data }: { data: DashboardData }) {
           <small>Lowest to highest modeled case</small>
         </div>
         <div>
-          <span>Base case vs. hurdle</span>
-          <strong>{formatPercent(results.base.cagr)} vs. {formatPercent(model.hurdleRate)} / year</strong>
-          <small>{results.base.cagr == null ? "Return unavailable" : results.base.cagr >= model.hurdleRate ? "Base case clears your reference hurdle" : "Base case is below your reference hurdle"}</small>
-        </div>
-        <div>
           <span>Probability-weighted price</span>
           <strong>{formatMoney(weightedPrice, "USD", false)}</strong>
           <small>{formatPercent(weightedCagr)} annualized · {formatPercent(outcomeWeightTotal, 0)} total weight</small>
@@ -443,8 +443,8 @@ export default function StockProjections({ data }: { data: DashboardData }) {
           <tbody>
             <tr><th scope="row">Revenue</th><td>{formatMoney(results.bear.revenue, currency)}</td><td>{formatMoney(results.base.revenue, currency)}</td><td>{formatMoney(results.bull.revenue, currency)}</td></tr>
             <tr><th scope="row">Revenue growth</th><td>{formatPercent(model.cases.bear.revenueGrowth)}</td><td>{formatPercent(model.cases.base.revenueGrowth)}</td><td>{formatPercent(model.cases.bull.revenueGrowth)}</td></tr>
-            <tr><th scope="row">Net income growth</th><td>{formatPercent(model.cases.bear.netIncomeGrowth)}</td><td>{formatPercent(model.cases.base.netIncomeGrowth)}</td><td>{formatPercent(model.cases.bull.netIncomeGrowth)}</td></tr>
-            <tr><th scope="row">Implied net margin</th><td>{formatPercent(results.bear.impliedMargin)}</td><td>{formatPercent(results.base.impliedMargin)}</td><td>{formatPercent(results.bull.impliedMargin)}</td></tr>
+            <tr><th scope="row">Net margin</th><td>{formatPercent(model.cases.bear.netMargin)}</td><td>{formatPercent(model.cases.base.netMargin)}</td><td>{formatPercent(model.cases.bull.netMargin)}</td></tr>
+            <tr><th scope="row">Derived net income growth</th><td>{formatPercent(results.bear.netIncomeGrowth)}</td><td>{formatPercent(results.base.netIncomeGrowth)}</td><td>{formatPercent(results.bull.netIncomeGrowth)}</td></tr>
             <tr><th scope="row">Net income</th><td>{formatMoney(results.bear.netIncome, currency)}</td><td>{formatMoney(results.base.netIncome, currency)}</td><td>{formatMoney(results.bull.netIncome, currency)}</td></tr>
             <tr><th scope="row">EPS</th><td>{formatMoney(results.bear.eps, "USD", false)}</td><td>{formatMoney(results.base.eps, "USD", false)}</td><td>{formatMoney(results.bull.eps, "USD", false)}</td></tr>
             <tr><th scope="row">Exit P/E</th><td>{model.cases.bear.exitPe.toFixed(1)}×</td><td>{model.cases.base.exitPe.toFixed(1)}×</td><td>{model.cases.bull.exitPe.toFixed(1)}×</td></tr>

@@ -62,7 +62,7 @@ h1 { margin:6px 0 0; font-size:34px; letter-spacing:-.04em; }
 .projection-horizon { display:flex; align-items:center; gap:10px; }
 .projection-horizon > span { color:#a1a1aa; font-size:11px; white-space:nowrap; }
 .projection-horizon .segmented-control button { padding:6px 9px; font-size:11px; }
-.projection-common-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; }
+.projection-common-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
 .projection-field { display:grid; align-content:start; gap:6px; min-width:0; color:#a1a1aa; font-size:11px; }
 .projection-number-wrap { display:flex; align-items:center; gap:8px; min-width:0; }
 .projection-number-wrap input { width:100%; min-width:0; padding:9px 10px; border:1px solid #3f3f46; border-radius:8px; outline:none; color:#fafafa; background:#09090b; font-size:13px; font-variant-numeric:tabular-nums; }
@@ -101,7 +101,7 @@ h1 { margin:6px 0 0; font-size:34px; letter-spacing:-.04em; }
 .projection-outcome-card dt { color:#71717a; }
 .projection-outcome-card dd { margin:0; color:#e4e4e7; text-align:right; font-variant-numeric:tabular-nums; }
 .projection-result-note { margin:10px 0 0; color:#fbbf24; font-size:10px; line-height:1.45; }
-.projection-benchmark { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:12px; }
+.projection-benchmark { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:12px; }
 .projection-benchmark > div { display:grid; gap:5px; min-width:0; padding:13px 14px; border:1px solid #3f3f46; border-radius:11px; background:#111113; }
 .projection-benchmark span { color:#a1a1aa; font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
 .projection-benchmark strong { font-size:14px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
