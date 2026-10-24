@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import StockProjections from "./StockProjections";
 
-type Metric = {
+export type Metric = {
   period_end: string; start_date?: string; fiscal_period?: string; filed?: string;
   value: number; yoy_pct: number | null; qoq_pct?: number | null;
   ttm_value?: number | null; ttm_yoy_pct?: number | null; ttm_qoq_pct?: number | null;
@@ -44,7 +45,7 @@ type MarginPoint = {
   net_margin_ttm_qoq_pp: number | null; net_margin_ttm_yoy_pp: number | null;
   gross_margin_ttm_qoq_pp: number | null; gross_margin_ttm_yoy_pp: number | null;
 };
-type DashboardData = {
+export type DashboardData = {
   company: { ticker: string; cik: number; name: string; exchange: string };
   market: {
     market_price: number | null; market_change: number | null;
@@ -774,7 +775,7 @@ function forwardPeNote(market: DashboardData["market"]) {
 export default function Dashboard() {
   const [ticker, setTicker] = useState("AAPL");
   const [years, setYears] = useState("4");
-    const [activeTab, setActiveTab] = useState<"financials" | "earnings">("financials");
+  const [activeTab, setActiveTab] = useState<"financials" | "earnings" | "projections">("financials");
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -901,8 +902,9 @@ export default function Dashboard() {
         <div className="stock-price-note">Market snapshot cached 15 min</div>
       </div>
       <div className="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
-              <button id="financials-tab" type="button" role="tab" aria-selected={activeTab === "financials"} aria-controls="financials-panel" onClick={() => setActiveTab("financials")}>Financials</button>
+        <button id="financials-tab" type="button" role="tab" aria-selected={activeTab === "financials"} aria-controls="financials-panel" onClick={() => setActiveTab("financials")}>Financials</button>
         <button id="earnings-tab" type="button" role="tab" aria-selected={activeTab === "earnings"} aria-controls="earnings-panel" onClick={() => setActiveTab("earnings")}>Earnings Call</button>
+        <button id="projections-tab" type="button" role="tab" aria-selected={activeTab === "projections"} aria-controls="projections-panel" onClick={() => setActiveTab("projections")}>Stock Projections</button>
       </div>
           <div id="financials-panel" role="tabpanel" aria-labelledby="financials-tab" hidden={activeTab !== "financials"}>
       <section className="section overview-section">
@@ -966,6 +968,9 @@ export default function Dashboard() {
       </div>
       <div id="earnings-panel" role="tabpanel" aria-labelledby="earnings-tab" hidden={activeTab !== "earnings"}>
         <EarningsCallPanel key={data.company.ticker} ticker={data.company.ticker} quarters={earningsQuarters} />
+      </div>
+      <div id="projections-panel" role="tabpanel" aria-labelledby="projections-tab" hidden={activeTab !== "projections"}>
+        <StockProjections key={data.company.ticker} data={data} />
       </div>
     </>}
   </main>;
