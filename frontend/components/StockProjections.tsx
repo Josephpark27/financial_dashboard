@@ -391,7 +391,7 @@ export default function StockProjections({ data }: { data: DashboardData }) {
             {marginAboveHistory && <em>Note: Target margin is above reported history</em>}
           </div>
           <NumberField label="Exit P/E" value={model.cases[key].exitPe} suffix="×"
-            min={0} max={200} step={0.5} onChange={value => updateCase(key, "exitPe", clamp(value, 0, 200))} />
+            min={0} max={200} step={1} onChange={value => updateCase(key, "exitPe", clamp(value, 0, 200))} />
           <NumberField label="Share count change" value={model.cases[key].shareGrowth} suffix="% / yr"
             min={-99} max={200} step={0.5} onChange={value => updateCase(key, "shareGrowth", clamp(value, -99, 200))} />
           <NumberField label="Outcome weight" value={model.cases[key].outcomeWeight} suffix="%"
