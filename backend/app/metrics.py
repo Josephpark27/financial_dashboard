@@ -857,6 +857,16 @@ def shares_outstanding_metric(facts, years_back):
             "concept": fact["concept"],
         })
 
+    # Some SEC concepts can contain more than one observation for the same
+    # fiscal quarter (for example, separate contexts with slightly different
+    # period-end dates). Keep one chart point per fiscal quarter.
+    periods_by_quarter = {}
+    for row in periods:
+        previous = periods_by_quarter.get(row["fiscal_period"])
+        if previous is None or row["period_end"] > previous["period_end"]:
+            periods_by_quarter[row["fiscal_period"]] = row
+    periods = sorted(periods_by_quarter.values(), key=lambda row: row["period_end"])
+
     if not periods:
         raise ValueError("Could not identify quarterly common shares outstanding in SEC facts.")
 
@@ -883,7 +893,7 @@ def shares_outstanding_metric(facts, years_back):
 
 
 def _weighted_average_shares_series(facts, cutoff):
-    """Use reported quarterly weighted-average basic shares when point counts are absent."""
+    """Use quarterly weighted-average basic shares, deriving Q4 from annual data."""
     taxonomies = facts.get("facts", {})
     namespaces = ["us-gaap"] + [name for name in taxonomies if name != "us-gaap"]
     preferred = [
@@ -902,20 +912,19 @@ def _weighted_average_shares_series(facts, cutoff):
             if not raw_rows:
                 raw_rows = next((rows for unit, rows in units.items() if unit.lower() == "shares"), [])
             display_name = concept if namespace == "us-gaap" else f"{namespace}:{concept}"
-            # Weighted averages are duration facts; retain directly reported
-            # quarter values and do not derive Q4 by subtracting annual averages.
+            clean = _clean_periods(raw_rows)
             quarterly = [
-                row for row in _clean_periods(raw_rows)
+                row for row in clean
                 if 70 <= row["days"] <= 120 and row["end"] >= cutoff
             ]
             if quarterly:
                 ranked.append((len(quarterly), max(row["end"] for row in quarterly),
-                               position, display_name, quarterly))
+                               position, display_name, quarterly, clean))
 
     if not ranked:
         return None, {}
     ranked.sort(key=lambda item: (item[0], item[1], -item[2]), reverse=True)
-    _, _, _, concept, rows = ranked[0]
+    _, _, _, concept, rows, clean = ranked[0]
     by_end = {
         row["end"]: {
             "value": row["value"], "filed": row.get("filed"),
@@ -923,4 +932,49 @@ def _weighted_average_shares_series(facts, cutoff):
         }
         for row in rows
     }
+
+    annual_rows = [row for row in clean if 350 <= row["days"] <= 380]
+    all_quarters = [row for row in clean if 70 <= row["days"] <= 120]
+    for annual in annual_rows:
+        fiscal_year = annual.get("fy")
+        if fiscal_year is None or annual["end"] < cutoff:
+            continue
+        annual_quarters = {
+            row.get("fp"): row for row in all_quarters
+            if row.get("fy") == fiscal_year
+            and row.get("fp") in {"Q1", "Q2", "Q3"}
+            and annual["start"] <= row["start"] <= row["end"] < annual["end"]
+        }
+        first, second, third = (
+            annual_quarters.get(period) for period in ("Q1", "Q2", "Q3")
+        )
+        if not (first and second and third):
+            continue
+        if not (
+            first["start"] == annual["start"]
+            and second["start"] == first["end"] + timedelta(days=1)
+            and third["start"] == second["end"] + timedelta(days=1)
+        ):
+            continue
+
+        fourth_days = (annual["end"] - third["end"]).days
+        if not 70 <= fourth_days <= 120 or annual["end"] in by_end:
+            continue
+
+        annual_days = (annual["end"] - annual["start"]).days + 1
+        weighted_total = sum(
+            quarter["value"] * quarter["days"]
+            for quarter in (first, second, third)
+        )
+        fourth_value = (
+            annual["value"] * annual_days - weighted_total
+        ) / fourth_days
+        by_end[annual["end"]] = {
+            "value": fourth_value,
+            "filed": annual.get("filed"),
+            "fy": fiscal_year,
+            "fp": "Q4",
+            "concept": concept,
+        }
+
     return f"{concept} (quarterly weighted average; point-in-time shares unavailable)", by_end
