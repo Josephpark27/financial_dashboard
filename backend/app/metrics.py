@@ -15,6 +15,13 @@ def candidates(facts, kind):
         ]
     elif kind == "gross profit":
         preferred = ["GrossProfit"]
+    elif kind == "cost of revenue":
+        preferred = [
+            "CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold",
+            "CostOfSales",
+            "CostOfGoodsAndServicesSoldExcludingDepreciationDepletionAndAmortization",
+            "CostOfRevenueExcludingDepreciationDepletionAndAmortization",
+        ]
     elif kind == "operating income":
         preferred = ["OperatingIncomeLoss", "OperatingIncomeLossFromContinuingOperations"]
     elif kind == "eps":
@@ -412,6 +419,50 @@ def margin_metric(revenue, net_income, gross_profit):
                 row[ttm_field] - prior_year[ttm_field]
                 if yoy_valid and row[ttm_field] is not None and prior_year[ttm_field] is not None else None
             )
+    return rows
+
+
+def gross_profit_metric(facts, years_back):
+    """Use reported gross profit, filling missing quarters from revenue less cost of revenue."""
+    try:
+        _, reported = quarter_metric(facts, years_back, "gross profit")
+    except ValueError:
+        reported = []
+
+    try:
+        _, revenue = quarter_metric(facts, years_back, "revenue")
+        _, costs = quarter_metric(facts, years_back, "cost of revenue")
+    except ValueError:
+        revenue, costs = [], []
+
+    gross_by_end = {row["period_end"]: row for row in reported}
+    revenue_by_end = {row["period_end"]: row for row in revenue}
+    costs_by_end = {row["period_end"]: row for row in costs}
+    for end in revenue_by_end.keys() & costs_by_end.keys():
+        if end in gross_by_end:
+            continue
+        revenue_row = revenue_by_end[end]
+        cost_row = costs_by_end[end]
+        gross_by_end[end] = {
+            "start": revenue_row["start"],
+            "end": revenue_row["end"],
+            "value": revenue_row["value"] - cost_row["value"],
+            "filed": revenue_row.get("filed"),
+            "fy": revenue_row.get("fy"),
+            "fp": revenue_row.get("fp"),
+            "days": revenue_row.get("days"),
+            "source": "derived from revenue less cost of revenue",
+            "concept": "Revenue less cost of revenue",
+            "period_end": end,
+            "start_date": revenue_row.get("start_date"),
+            "fiscal_period": revenue_row.get("fiscal_period"),
+        }
+
+    if not gross_by_end:
+        raise ValueError("Could not identify quarterly gross profit or cost of revenue facts.")
+
+    rows = sorted(gross_by_end.values(), key=lambda row: row["end"])
+    add_growth_metrics(rows)
     return rows
 
 

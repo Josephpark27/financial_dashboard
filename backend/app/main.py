@@ -4,7 +4,11 @@ from datetime import date, timedelta
 from fastapi import Body, FastAPI, HTTPException, Query
 
 from . import db
-from .metrics import add_growth_metrics, balance_sheet_metric, free_cash_flow_metric, liquidity_debt_metric, margin_metric, quarter_metric, shares_outstanding_metric
+from .metrics import (
+    add_growth_metrics, balance_sheet_metric, free_cash_flow_metric,
+    gross_profit_metric, liquidity_debt_metric, margin_metric, quarter_metric,
+    shares_outstanding_metric,
+)
 from .market import (
     cached_earnings_call_transcript, convert_quarterly_flows_to_usd,
     earnings_call_transcript, earnings_event, historical_pe, snapshot,
@@ -141,7 +145,7 @@ def dashboard(ticker: str = Query("AAPL", min_length=1, max_length=10), years: i
         _, margin_revenue = build_metric(facts, company["cik"], years + 1, "revenue")
         _, margin_income = build_metric(facts, company["cik"], years + 1, "net income")
         try:
-            _, margin_gross_profit = quarter_metric(facts, years + 1, "gross profit")
+            margin_gross_profit = gross_profit_metric(facts, years + 1)
         except ValueError:
             margin_gross_profit = []
         margins = margin_metric(margin_revenue, margin_income, margin_gross_profit)
